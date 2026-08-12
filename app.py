@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from excel_engine import ExcelHandler
-from db_engine import DBEngine
+from db_engine import SupabaseDBEngine
 from rag_engine import RAGEngine
 from agents import DEFAULT_MODEL, translator_agent, reviewer_agent
 from custom_types import BatchTranslationRequest
@@ -524,7 +524,7 @@ section[data-testid="stSidebar"] .stSelectbox svg {
 # DATABASE
 # ============================================================
 
-db = DBEngine()
+db = SupabaseDBEngine()
 
 
 # ============================================================
@@ -794,9 +794,9 @@ with tab1:
 
 
         if temp_input_path.lower().endswith(".csv"):
-            df_preview = pd.read_csv(temp_input_path)
+            df_preview = pd.read_csv(temp_input_path).fillna("").astype(str)
         else:
-            df_preview = pd.read_excel(temp_input_path)
+            df_preview = pd.read_excel(temp_input_path).fillna("").astype(str)
 
 
         render_html(f"""
@@ -1148,7 +1148,8 @@ with tab2:
 
     if rag_file is not None:
         if rag_file.name.lower().endswith(".csv"):
-            df_rag = pd.read_csv(rag_file)
+            df_rag = pd.read_csv(rag_file).fillna("").astype(str)
+            # df_rag= df_rag.drop_duplicates(subset=df_rag.columns.tolist(), keep="first")
         else:
             try:
                 excel_obj = pd.ExcelFile(rag_file)
@@ -1160,7 +1161,8 @@ with tab2:
                     key="rag_sheet_select",
                 )
 
-                df_rag = pd.read_excel(excel_obj, sheet_name=selected_sheet)
+                df_rag = pd.read_excel(excel_obj, sheet_name=selected_sheet).fillna("").astype(str)
+                # df_rag= df_rag.drop_duplicates(subset=df_rag.columns.tolist(), keep="first")
             except Exception as e:
                 st.error(f"Error reading Excel sheets: {e}")
 

@@ -1,10 +1,11 @@
 import os
 from typing import Dict
 from excel_engine import ExcelHandler
-from db_engine import DBEngine
+from db_engine import DBEngine, SupabaseDBEngine
 from rag_engine import RAGEngine
 from agents import DEFAULT_MODEL, translator_agent, reviewer_agent
 from custom_types import BatchTranslationRequest
+from db_engine import SupabaseDBEngine
 
 def run_translation_pipeline(
         input_file: str,
@@ -34,7 +35,8 @@ def run_translation_pipeline(
     print(f"📦 Created {len(batches)} batch(es) with batch size = {batch_size}\n")
 
     # 1. Initialize Engines
-    db = DBEngine()
+    
+    db = SupabaseDBEngine()
     rag = RAGEngine()
     
     # 2. Pre-load Context Data from SQLite directly into Memory (0 API Costs)
