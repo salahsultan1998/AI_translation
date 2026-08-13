@@ -764,13 +764,7 @@ with st.sidebar:
     """)
 
     model_options = [
-        "openai/gpt-4o",
-        "anthropic/claude-3.5-sonnet",
-        "qwen/qwen-2.5-72b-instruct",
-        "openai/gpt-4o-mini",
-        "qwen/qwen3.7-flash",
-        "x-ai/grok-4.5",
-        "google/gemini-3.1-flash-lite-preview",
+        "qwen/qwen3-235b-a22b-2507",
         "qwen/qwen3.7-plus"
     ]
 
