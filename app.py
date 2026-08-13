@@ -1,9 +1,12 @@
 import os
 import time
+import html
+import tempfile
 from textwrap import dedent
-
+import io
 import pandas as pd
 import streamlit as st
+from streamlit_cookies_controller import CookieController
 
 from excel_engine import ExcelHandler
 from db_engine import SupabaseDBEngine
@@ -28,16 +31,37 @@ st.set_page_config(
 # HTML HELPER
 # ============================================================
 
-def render_html(html):
+def render_html(html_string):
     """
     Render custom HTML safely.
     dedent() is important because Streamlit Markdown can
     interpret indented HTML as a code block.
     """
     st.markdown(
-        dedent(html).strip(),
+        dedent(html_string).strip(),
         unsafe_allow_html=True,
     )
+
+
+# ============================================================
+# CACHE & DB WRAPPERS (PERFORMANCE)
+# ============================================================
+
+db = SupabaseDBEngine()
+cookie_controller = CookieController()
+
+# Cache database reads for 5 minutes so we don't exceed API limits
+@st.cache_data(ttl=300)
+def fetch_game_profile(_db, game_id):
+    return _db.get_game_profile(game_id)
+
+@st.cache_data(ttl=300)
+def fetch_terms(_db, game_id, target_language):
+    return _db.get_terms_for_game(game_id, target_language)
+
+@st.cache_data(ttl=300)
+def fetch_tm(_db, game_id, target_language):
+    return _db.get_tm_for_game(game_id, target_language)
 
 
 # ============================================================
@@ -96,6 +120,11 @@ section[data-testid="stSidebar"] label {
     color: #9ca3af !important;
     font-size: 0.78rem !important;
     font-weight: 600 !important;
+}
+
+/* Hide the "Press Enter to submit form" text to prevent overlapping */
+[data-testid="InputInstructions"] {
+    display: none !important;
 }
 
 section[data-testid="stSidebar"] .stSelectbox > div > div {
@@ -521,10 +550,121 @@ section[data-testid="stSidebar"] .stSelectbox svg {
 
 
 # ============================================================
-# DATABASE
+# AUTHENTICATION LOGIC (COOKIE + SESSION + TIMEOUT)
 # ============================================================
 
-db = SupabaseDBEngine()
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+
+def clear_authenticated_session():
+    """Clear authentication and all user/session-specific state."""
+    try:
+        db.sign_out()
+    except Exception:
+        pass
+
+    try:
+        cookie_controller.remove("locatool_auth_token")
+    except Exception:
+        pass
+
+    st.query_params.clear()
+    # Correct, safe way to clear Streamlit session state
+    st.session_state.clear()
+
+
+# 1. Auto-login / session restore via browser cookie
+if st.session_state.user is None:
+    try:
+        saved_token = cookie_controller.get("locatool_auth_token")
+    except Exception:
+        saved_token = None
+
+    if saved_token:
+        try:
+            auto_user = db.get_user_from_token(saved_token)
+        except Exception:
+            auto_user = None
+
+        if auto_user:
+            st.session_state.user = auto_user
+
+
+def show_login_page():
+    _, col, _ = st.columns([1, 1.5, 1])
+
+    with col:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>🔒 LocaTool Access</h2>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align: center; opacity: 0.7;'>"
+            "Please sign in to access the translation workspace."
+            "</p><br>",
+            unsafe_allow_html=True,
+        )
+
+        with st.form("login_form"):
+            email = st.text_input("Email Address")
+            password = st.text_input("Password", type="password")
+            submit_button = st.form_submit_button(
+                "Log In",
+                use_container_width=True,
+            )
+
+            if submit_button:
+                email = email.strip()
+
+                if not email or not password:
+                    st.error("Please enter both your email and password.")
+                else:
+                    try:
+                        user, token, error = db.sign_in(email, password)
+                    except Exception as e:
+                        user, token, error = None, None, str(e)
+
+                    if error or not user or not token:
+                        st.error(f"Login failed: {error or 'Invalid login response.'}")
+                    else:
+                        st.session_state.clear() # Clear state before starting session
+                        st.session_state.user = user
+                        st.session_state.last_active = time.time()
+
+                        try:
+                            cookie_controller.set(
+                                "locatool_auth_token",
+                                token,
+                            )
+                        except Exception as e:
+                            clear_authenticated_session()
+                            st.error(f"Login failed while saving the session: {e}")
+                            st.stop()
+
+                        st.rerun()
+
+
+# 2. Gatekeeper Check
+if st.session_state.user is None:
+    show_login_page()
+    st.stop()
+
+
+# 3. 10-Minute Rolling Inactivity Timer
+INACTIVITY_LIMIT = 600
+
+if "last_active" not in st.session_state:
+    st.session_state.last_active = time.time()
+
+current_time = time.time()
+
+if current_time - st.session_state.last_active > INACTIVITY_LIMIT:
+    clear_authenticated_session()
+    st.warning(
+        "Session expired due to 10 minutes of inactivity. Please log in again."
+    )
+    st.stop()
+
+st.session_state.last_active = current_time
 
 
 # ============================================================
@@ -532,6 +672,17 @@ db = SupabaseDBEngine()
 # ============================================================
 
 with st.sidebar:
+    
+    if st.session_state.user:
+        # Sanitize email before injection
+        safe_email = html.escape(str(st.session_state.user.email))
+        st.caption(f"👤 **{safe_email}**")
+
+    if st.button("Log Out", use_container_width=True):
+        clear_authenticated_session()
+        st.rerun()
+
+    st.divider()
 
     render_html("""
     <div class="sidebar-brand">
@@ -591,13 +742,17 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
+    # Secure HTML Escaping for User Data
+    safe_game_id = html.escape(game_id.lower().strip())
+    safe_target_lang = html.escape(target_language.lower().strip())
+
     render_html(f"""
     <div class="db-card">
         <div class="db-label">
             Active Database
         </div>
         <div class="db-name">
-            {game_id.lower().strip()}_{target_language.lower().strip()}
+            {safe_game_id}_{safe_target_lang}
         </div>
     </div>
     """)
@@ -693,7 +848,7 @@ with info_col1:
             Active Project
         </div>
         <div class="info-value">
-            {game_id}
+            {html.escape(game_id)}
         </div>
         <div class="info-sub">
             Current game localization project
@@ -708,16 +863,16 @@ with info_col2:
             Target Language
         </div>
         <div class="info-value">
-            {target_language}
+            {html.escape(target_language)}
         </div>
         <div class="info-sub">
-            Chinese → {target_language}
+            Chinese → {html.escape(target_language)}
         </div>
     </div>
     """)
 
 with info_col3:
-    short_model = model_choice.split("/")[-1]
+    short_model = html.escape(model_choice.split("/")[-1])
     render_html(f"""
     <div class="info-card">
         <div class="info-label">
@@ -762,8 +917,8 @@ with tab1:
     render_html(f"""
     <div class="section-description">
         Upload your game text and translate Chinese content into
-        <strong>{target_language}</strong> for
-        <strong>{game_id}</strong>.
+        <strong>{html.escape(target_language)}</strong> for
+        <strong>{html.escape(game_id)}</strong>.
     </div>
     """)
 
@@ -774,38 +929,24 @@ with tab1:
     )
 
     if uploaded_file is not None:
-        os.makedirs("data", exist_ok=True)
-
-        temp_input_path = os.path.join(
-            "data",
-            uploaded_file.name,
-        )
-
-        temp_output_path = os.path.join(
-            "data",
-            f"translated_{uploaded_file.name}",
-        )
-
-        # Optimization: Only write the file if it hasn't been saved yet to avoid disk I/O on every rerun
-        if "last_uploaded_filename" not in st.session_state or st.session_state.last_uploaded_filename != uploaded_file.name:
-            with open(temp_input_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            st.session_state.last_uploaded_filename = uploaded_file.name
-
-
-        if temp_input_path.lower().endswith(".csv"):
-            df_preview = pd.read_csv(temp_input_path).fillna("").astype(str)
+        
+        # Load File preview directly into memory (zero temp files generated)
+        if uploaded_file.name.lower().endswith(".csv"):
+            df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
         else:
-            df_preview = pd.read_excel(temp_input_path).fillna("").astype(str)
+            df_preview = pd.read_excel(uploaded_file).fillna("").astype(str)
+            
+        # Reset the uploaded file pointer so it can be read again securely later
+        uploaded_file.seek(0)
 
-
+        safe_file_name = html.escape(uploaded_file.name)
         render_html(f"""
         <div class="section-title">
             File Preview
         </div>
         <div class="section-description">
             {len(df_preview):,} rows detected in
-            <strong>{uploaded_file.name}</strong>.
+            <strong>{safe_file_name}</strong>.
         </div>
         """)
 
@@ -820,27 +961,9 @@ with tab1:
                 "Required column 'text' was not found in the uploaded file."
             )
         else:
-            # =================================================
-            # SESSION STATE
-            # =================================================
-            if "is_translating" not in st.session_state:
-                st.session_state.is_translating = False
-            
+            # Init state strictly for UI tracking
             if "translation_complete" not in st.session_state:
                 st.session_state.translation_complete = False
-
-            if "current_batch" not in st.session_state:
-                st.session_state.current_batch = 0
-
-            if "total_batches" not in st.session_state:
-                st.session_state.total_batches = 0
-
-            if "translations_dict" not in st.session_state:
-                st.session_state.translations_dict = {}
-
-            if "start_time" not in st.session_state:
-                st.session_state.start_time = 0.0
-
 
             render_html("""
             <div class="section-title">
@@ -855,15 +978,14 @@ with tab1:
                     "Start Translation",
                     type="primary",
                     use_container_width=True,
-                    disabled=st.session_state.is_translating,
                 )
 
             with col_btn2:
-                stop_clicked = st.button(
+                # Placed as visual only. A blocking Python loop will ignore this until finished.
+                st.button(
                     "Stop Translation",
                     type="secondary",
                     use_container_width=True,
-                    disabled=not st.session_state.is_translating,
                 )
 
             with col_info:
@@ -874,189 +996,182 @@ with tab1:
                     </div>
                     <div class="status-description">
                         {batch_size} rows per API request
-                        · {target_language} output
+                        · {html.escape(target_language)} output
                     </div>
                 </div>
                 """)
 
-            # =================================================
-            # START TRANSLATION
-            # =================================================
+            # ----------------------------------------------------
+            # THE TRANSLATION ENGINE (SAFE, IN-PLACE EXECUTION)
+            # ----------------------------------------------------
             if start_clicked:
-                st.session_state.is_translating = True
                 st.session_state.translation_complete = False
-                st.session_state.current_batch = 0
-                st.session_state.translations_dict = {}
-                st.session_state.start_time = time.time()
-
-                rows = ExcelHandler.read_game_sheet(
-                    temp_input_path,
-                    text_column="text",
-                    context_column="text_type",
-                )
-
-                st.session_state.rows = rows
-                st.session_state.batches = ExcelHandler.create_batches(
-                    rows,
-                    batch_size=batch_size,
-                )
-                st.session_state.total_batches = len(st.session_state.batches)
-
-                rag = RAGEngine()
-                glossary_dict = db.get_terms_for_game(game_id, target_language)
-                tm_dict = db.get_tm_for_game(game_id, target_language)
-                game_profile = db.get_game_profile(game_id)
-
-                rag.load_resources(
-                    glossary_dict=glossary_dict,
-                    tm_dict=tm_dict,
-                    game_profile=game_profile,
-                )
-
-                st.session_state.rag_engine = rag
-                st.rerun()
-
-            # =================================================
-            # STOP TRANSLATION
-            # =================================================
-            if stop_clicked:
-                st.session_state.is_translating = False
-                st.warning("Translation process cancelled by user.")
-                # Removed st.rerun() here so the warning message actually stays on screen
-
-            # =================================================
-            # ACTIVE TRANSLATION LOOP
-            # =================================================
-            if st.session_state.is_translating:
-                batches = st.session_state.batches
-                total_batches = st.session_state.total_batches
-                current_idx = st.session_state.current_batch
-
-                if current_idx < total_batches:
-                    progress_val = current_idx / total_batches
-                    st.progress(progress_val)
-
-                    elapsed = time.time() - st.session_state.start_time
-                    mins, secs = divmod(int(elapsed), 60)
-                    time_str = f"{mins:02d}:{secs:02d}"
-
-                    col_m1, col_m2, col_m3 = st.columns(3)
-
-                    col_m1.metric("Progress", f"Batch {current_idx + 1} / {total_batches}")
-                    col_m2.metric("Elapsed Time", time_str)
-                    col_m3.metric("Status", "Processing")
-
-                    batch_rows = batches[current_idx]
-                    rag = st.session_state.rag_engine
-
-                    rag_context = rag.get_batch_context(
-                        batch_rows=batch_rows,
-                        target_language=target_language,
-                    )
-
-                    batch_request = BatchTranslationRequest(
-                        batch_id=current_idx + 1,
-                        rows=batch_rows,
-                        target_language=target_language,
-                    )
-
+                
+                # We use a temporary directory that the OS auto-cleans the moment the block ends.
+                # No files are left behind in your project directory.
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_input_path = os.path.join(temp_dir, f"input_{uploaded_file.name}")
+                    temp_output_path = os.path.join(temp_dir, f"output_{uploaded_file.name}")
+                    
+                    with open(temp_input_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    
+                    # Fetch Database items cleanly with error handling
                     try:
-                        response = translator_agent(
-                            batch_request=batch_request,
-                            rag_context=rag_context,
-                            feedback="",
-                            model_name=model_choice,
-                            fallback_model_name="openai/gpt-4o-mini",
-                            game_id=game_id,
+                        glossary_dict = fetch_terms(db, game_id, target_language)
+                        tm_dict = fetch_tm(db, game_id, target_language)
+                        game_profile = fetch_game_profile(db, game_id)
+                        
+                        rag = RAGEngine()
+                        rag.load_resources(
+                            glossary_dict=glossary_dict,
+                            tm_dict=tm_dict,
+                            game_profile=game_profile,
                         )
-
-                        review = reviewer_agent(
-                            original_rows=batch_rows,
-                            translated_batch=response,
-                        )
-
-                        for item in (response.translations or []):
-                            st.session_state.translations_dict[item.row_id] = item.translated_text
-
                     except Exception as e:
-                        # Use st.toast so the error shows up without breaking the UI flow on rerun
-                        st.toast(f"Error on Batch {current_idx + 1}: {e}", icon="🚨")
+                        st.error(f"Failed to fetch database context: {e}")
+                        st.stop()
+
+                    # Prepare Batches
+                    rows = ExcelHandler.read_game_sheet(
+                        temp_input_path,
+                        text_column="text",
+                        context_column="text_type",
+                    )
+                    batches = ExcelHandler.create_batches(rows, batch_size=batch_size)
+                    total_batches = len(batches)
+                    translations_dict = {}
+                    
+                    # Setup UI Placeholders to update dynamically without st.rerun()
+                    progress_bar = st.progress(0.0)
+                    ui_col1, ui_col2, ui_col3 = st.columns(3)
+                    metric_progress = ui_col1.empty()
+                    metric_time = ui_col2.empty()
+                    metric_status = ui_col3.empty()
+                    
+                    start_time = time.time()
+                    
+                    # Processing Loop
+                    for current_idx, batch_rows in enumerate(batches):
+                        
+                        # UI Updates in place
+                        progress_val = current_idx / max(1, total_batches)
+                        progress_bar.progress(progress_val)
+                        
+                        elapsed = time.time() - start_time
+                        mins, secs = divmod(int(elapsed), 60)
+                        
+                        metric_progress.metric("Progress", f"Batch {current_idx + 1} / {total_batches}")
+                        metric_time.metric("Elapsed Time", f"{mins:02d}:{secs:02d}")
+                        metric_status.metric("Status", "Processing API")
+                        
+                        rag_context = rag.get_batch_context(
+                            batch_rows=batch_rows,
+                            target_language=target_language,
+                        )
+
+                        batch_request = BatchTranslationRequest(
+                            batch_id=current_idx + 1,
+                            rows=batch_rows,
+                            target_language=target_language,
+                        )
+
+                        try:
+                            response = translator_agent(
+                                batch_request=batch_request,
+                                rag_context=rag_context,
+                                feedback="",
+                                model_name=model_choice,
+                                fallback_model_name="openai/gpt-4o-mini",
+                                game_id=game_id,
+                            )
+
+                            # Reviewer step (Assuming it acts on response, kept unchanged from original logic)
+                            review = reviewer_agent(
+                                original_rows=batch_rows,
+                                translated_batch=response,
+                            )
+
+                            for item in (response.translations or []):
+                                translations_dict[item.row_id] = item.translated_text
+                                
+                        except Exception as e:
+                            st.toast(f"Error on Batch {current_idx + 1}: {e}", icon="🚨")
+                            
+                        # Assure mapping exists for failed rows
                         for r in batch_rows:
-                            if r.row_id not in st.session_state.translations_dict:
-                                st.session_state.translations_dict[r.row_id] = r.source_text
+                            if r.row_id not in translations_dict:
+                                translations_dict[r.row_id] = r.source_text
 
-                    # -----------------------------------------
-                    # ENSURE ALL ROWS HAVE OUTPUT (Fallback)
-                    # -----------------------------------------
-                    for r in batch_rows:
-                        if r.row_id not in st.session_state.translations_dict:
-                            st.session_state.translations_dict[r.row_id] = r.source_text
-
-                    st.session_state.current_batch += 1
-                    time.sleep(0.1)
-                    st.rerun()
-
-                else:
-                    # -----------------------------------------
-                    # FINALIZE TRANSLATION
-                    # -----------------------------------------
-                    st.session_state.is_translating = False
-                    st.session_state.translation_complete = True
-
+                    # Loop finished. Save to temp output.
+                    progress_bar.progress(1.0)
+                    metric_status.metric("Status", "Completed")
+                    
                     target_col_name = f"text_{target_language.strip().replace(' ', '_')}"
-
+                    
                     ExcelHandler.write_translated_sheet(
                         original_file=temp_input_path,
-                        translations=st.session_state.translations_dict,
+                        translations=translations_dict,
                         target_column=target_col_name,
                         output_file=temp_output_path,
                     )
                     
-                    st.rerun() # Rerun to break the loop and show the final results cleanly
+                    # Load the newly created file directly into memory for download
+                    # The moment the `with` block closes, the file is destroyed on the server disk!
+                    with open(temp_output_path, "rb") as f:
+                        st.session_state.final_download_bytes = f.read()
+                        
+                    st.session_state.final_elapsed_time = time.time() - start_time
+                    st.session_state.translation_complete = True
+                    
+                # Rerun just ONCE at the very end to reveal the download block below
+                st.rerun()
 
-            # =================================================
-            # DISPLAY FINAL RESULTS
-            # =================================================
-            if st.session_state.get("translation_complete"):
-                total_elapsed = time.time() - st.session_state.start_time
-                mins, secs = divmod(int(total_elapsed), 60)
-
+# ----------------------------------------------------
+            # DOWNLOAD SECTION (MEMORY ONLY)
+            # ----------------------------------------------------
+            if st.session_state.get("translation_complete") and "final_download_bytes" in st.session_state:
+                mins, secs = divmod(int(st.session_state.final_elapsed_time), 60)
                 st.success(f"Translation completed successfully in {mins}m {secs}s.")
 
                 render_html("""
                 <div class="section-title">
-                    Translated Data
+                    Translated Output
                 </div>
                 """)
 
-                if temp_output_path.lower().endswith(".csv"):
-                    translated_df = pd.read_csv(temp_output_path)
-                else:
-                    translated_df = pd.read_excel(temp_output_path)
-
-                st.dataframe(
-                    translated_df,
-                    use_container_width=True,
-                    height=300
-                    
-                )
+                # Determine extension securely
+                is_csv = uploaded_file.name.lower().endswith(".csv")
+                
+                # --- NEW CODE: Read the bytes directly into memory for preview ---
+                file_bytes = st.session_state.final_download_bytes
+                
+                try:
+                    if is_csv:
+                        translated_df = pd.read_csv(io.BytesIO(file_bytes)).fillna("").astype(str)
+                    else:
+                        translated_df = pd.read_excel(io.BytesIO(file_bytes)).fillna("").astype(str)
+                        
+                    st.dataframe(
+                        translated_df,
+                        use_container_width=True,
+                        height=300
+                    )
+                except Exception as e:
+                    st.error(f"Could not load preview: {e}")
+                # ---------------------------------------------------------------
 
                 lang_clean = target_language.lower().strip().replace(" ", "_")
-                mime_type = (
-                    "text/csv" if temp_output_path.lower().endswith(".csv")
-                    else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime_type = "text/csv" if is_csv else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                
+                st.download_button(
+                    label=f"Download {html.escape(target_language)} File",
+                    data=st.session_state.final_download_bytes,
+                    file_name=f"{game_id}_{lang_clean}_{uploaded_file.name}",
+                    mime=mime_type,
+                    type="primary",
+                    use_container_width=True,
                 )
-
-                with open(temp_output_path, "rb") as file:
-                    st.download_button(
-                        label=f"Download {target_language} File",
-                        data=file,
-                        file_name=f"{game_id}_{lang_clean}_{uploaded_file.name}",
-                        mime=mime_type,
-                        type="primary",
-                        use_container_width=True,
-                    )
-
 
 # ============================================================
 # TAB 2 — DATABASE & CONTEXT
@@ -1075,9 +1190,6 @@ with tab2:
     </div>
     """)
 
-    # ========================================================
-    # GAME PROFILE
-    # ========================================================
     render_html("""
     <div class="section-title">
         Game Profile
@@ -1091,7 +1203,8 @@ with tab2:
     </div>
     """)
 
-    existing_profile = db.get_game_profile(game_id)
+    # Cached Fetch
+    existing_profile = fetch_game_profile(db, game_id)
 
     with st.form("profile_form"):
         tone_input = st.text_area(
@@ -1107,13 +1220,11 @@ with tab2:
 
         if st.form_submit_button("Save Game Profile", type="primary"):
             db.upsert_game_profile(game_id, tone_input)
-            st.success(f"Game Profile for `{game_id}` saved successfully.")
+            fetch_game_profile.clear() # Clear cache to show new data on refresh
+            st.success(f"Game Profile for `{html.escape(game_id)}` saved successfully.")
 
     st.divider()
 
-    # ========================================================
-    # DATABASE SEEDING
-    # ========================================================
     render_html("""
     <div class="section-title">
         Localization Knowledge Base
@@ -1123,8 +1234,8 @@ with tab2:
     render_html(f"""
     <div class="section-description">
         Upload reference translations for
-        <strong>{game_id}</strong> into
-        <strong>{target_language}</strong>.
+        <strong>{html.escape(game_id)}</strong> into
+        <strong>{html.escape(target_language)}</strong>.
     </div>
     """)
 
@@ -1147,9 +1258,9 @@ with tab2:
     df_rag = None
 
     if rag_file is not None:
+        # Load directly into memory
         if rag_file.name.lower().endswith(".csv"):
             df_rag = pd.read_csv(rag_file).fillna("").astype(str)
-            # df_rag= df_rag.drop_duplicates(subset=df_rag.columns.tolist(), keep="first")
         else:
             try:
                 excel_obj = pd.ExcelFile(rag_file)
@@ -1162,7 +1273,6 @@ with tab2:
                 )
 
                 df_rag = pd.read_excel(excel_obj, sheet_name=selected_sheet).fillna("").astype(str)
-                # df_rag= df_rag.drop_duplicates(subset=df_rag.columns.tolist(), keep="first")
             except Exception as e:
                 st.error(f"Error reading Excel sheets: {e}")
 
@@ -1239,6 +1349,7 @@ with tab2:
                                 target_language,
                                 pairs,
                             )
+                            fetch_terms.clear() # Wipe cache
                             status_rag.update(
                                 label="Database Upload Complete",
                                 state="complete",
@@ -1251,6 +1362,7 @@ with tab2:
                                 target_language,
                                 pairs,
                             )
+                            fetch_tm.clear() # Wipe cache
                             status_rag.update(
                                 label="Database Upload Complete",
                                 state="complete",

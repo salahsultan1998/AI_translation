@@ -15,12 +15,43 @@ class SupabaseDBEngine:
 
         self.client: Client = create_client(url, key)
 
+    # ========================================================
+    # AUTHENTICATION
+    # ========================================================
+    def sign_in(self, email: str, password: str):
+        """Logs in an existing user and returns user and access token."""
+        try:
+            response = self.client.auth.sign_in_with_password(
+                {"email": email, "password": password}
+            )
+            return response.user, response.session.access_token, None
+        except Exception as e:
+            return None, None, str(e)
+
+    def get_user_from_token(self, token: str):
+        """Verifies a saved cookie token and logs the user back in."""
+        try:
+            response = self.client.auth.get_user(token)
+            return response.user
+        except Exception:
+            return None
+
+    def sign_out(self):
+        """Safe placeholder since Supabase JWTs are stateless client-side."""
+        pass
+
+    # ========================================================
+    # NORMALIZATION HELPER METHODS
+    # ========================================================
     def _normalize_game(self, game_id: str) -> str:
         return game_id.lower().strip()
 
     def _normalize_lang(self, lang: str) -> str:
         return lang.lower().strip()
 
+    # ========================================================
+    # GLOSSARY MANAGEMENT
+    # ========================================================
     def upsert_terms(self, game_id: str, target_language: str, pairs: list[dict]) -> int:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
@@ -39,7 +70,6 @@ class SupabaseDBEngine:
         if not valid_pairs:
             return 0
 
-        # FIX: Changed from upsert() to insert() and removed on_conflict
         res = self.client.table("glossaries").insert(
             valid_pairs
         ).execute()
@@ -58,6 +88,9 @@ class SupabaseDBEngine:
 
         return {row["source_term"]: row["target_term"] for row in res.data}
 
+    # ========================================================
+    # TRANSLATION MEMORY (TM) MANAGEMENT
+    # ========================================================
     def upsert_tm(self, game_id: str, target_language: str, pairs: list[dict]) -> int:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
@@ -76,7 +109,6 @@ class SupabaseDBEngine:
         if not valid_pairs:
             return 0
 
-        # FIX: Changed from upsert() to insert() and removed on_conflict
         res = self.client.table("translation_memory").insert(
             valid_pairs
         ).execute()
@@ -95,6 +127,9 @@ class SupabaseDBEngine:
 
         return {row["source_text"]: row["target_text"] for row in res.data}
 
+    # ========================================================
+    # GAME PROFILE MANAGEMENT
+    # ========================================================
     def upsert_game_profile(self, game_id: str, tone_style: str):
         payload = {
             "game_id": self._normalize_game(game_id),
