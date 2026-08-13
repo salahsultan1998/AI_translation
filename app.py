@@ -771,7 +771,7 @@ with st.sidebar:
     model_choice = st.selectbox(
         "Model",
         options=model_options,
-        index=2,
+        index=1,
         help="Select the AI model used for translation batches.",
         label_visibility="collapsed",
     )
