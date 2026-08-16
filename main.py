@@ -115,7 +115,7 @@ def run_translation_pipeline(
             if r.row_id not in translations_dict:
                 translations_dict[r.row_id] = r.source_text
 
-    target_col_name = f"text_{target_language.strip().replace(' ', '_')}"
+    target_col_name = f"{target_language.strip().replace(' ', '_')}"
     
     print("\n--------------------------------------------------")
     print(f"💾 Saving translated workbook to: {output_file}...")

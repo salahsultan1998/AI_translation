@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional
 from custom_types import RowItem
 
 
@@ -17,7 +17,7 @@ class ExcelHandler:
     def read_game_sheet(
         file_path: str,
         text_column: str = "text",
-        context_column: str = "text_type"
+        context_column: Optional[str] = "text_type"
     ) -> List[RowItem]:
         """Reads game text files (.xlsx or .csv) using specified column mappings and normalizes full-width characters."""
         df = ExcelHandler._read_file(file_path)
@@ -37,9 +37,9 @@ class ExcelHandler:
                 .replace(" ", " ")                      # Replace full-width space with normal space
             )
 
-            # Safely extract context notes/speaker tags
+            # Safely extract context notes/speaker tags (Fixed the None check here)
             ctx = None
-            if context_column in df.columns and pd.notna(row.get(context_column)):
+            if context_column is not None and context_column in df.columns and pd.notna(row.get(context_column)):
                 ctx = str(row[context_column]).strip()
 
             records.append(
@@ -76,13 +76,9 @@ class ExcelHandler:
         # Map translated strings using explicit index position to guarantee row alignment
         translated_list = []
         for idx in range(len(df)):
-            # If row_id was translated, fetch it; otherwise keep original text or empty string
-            if idx in translations:
-                translated_list.append(translations[idx])
-            elif "text" in df.columns:
-                translated_list.append(df.loc[idx, "text"])
-            else:
-                translated_list.append("")
+            # app.py already guarantees that ALL row ids are in the translations dict.
+            # We use .get(idx, "") as a safe fallback just in case, removing the hardcoded "text" dependency.
+            translated_list.append(translations.get(idx, ""))
 
         df[target_column] = translated_list
 

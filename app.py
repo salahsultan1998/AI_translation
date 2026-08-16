@@ -2,8 +2,8 @@ import os
 import time
 import html
 import tempfile
-from textwrap import dedent
 import io
+from textwrap import dedent
 import pandas as pd
 import streamlit as st
 from streamlit_cookies_controller import CookieController
@@ -51,15 +51,15 @@ db = SupabaseDBEngine()
 cookie_controller = CookieController()
 
 # Cache database reads for 5 minutes so we don't exceed API limits
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_profile(_db, game_id):
     return _db.get_game_profile(game_id)
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_terms(_db, game_id, target_language):
     return _db.get_terms_for_game(game_id, target_language)
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_tm(_db, game_id, target_language):
     return _db.get_tm_for_game(game_id, target_language)
 
@@ -924,6 +924,18 @@ with tab1:
 
     if uploaded_file is not None:
         
+        # --- NEW FIX: Clear old translation state when a NEW file is uploaded ---
+        if st.session_state.get("last_uploaded_file_id") != uploaded_file.file_id:
+            # Update the tracker to the new file
+            st.session_state.last_uploaded_file_id = uploaded_file.file_id
+            # Wipe the old translation results from memory
+            st.session_state.translation_complete = False
+            st.session_state.pop("final_download_bytes", None)
+            st.session_state.pop("final_elapsed_time", None)
+        # ------------------------------------------------------------------------
+
+        # Load File preview directly into memory (zero temp files generated)
+        
         # Load File preview directly into memory (zero temp files generated)
         if uploaded_file.name.lower().endswith(".csv"):
             df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
@@ -950,11 +962,42 @@ with tab1:
             height=300,
         )
 
-        if "text" not in df_preview.columns:
-            st.error(
-                "Required column 'text' was not found in the uploaded file."
-            )
+        if len(df_preview.columns) == 0:
+            st.error("The uploaded file has no columns.")
         else:
+            # Column mapping setup
+            render_html("""
+            <div class="section-title" style="margin-top: 10px;">
+                Map Data Columns
+            </div>
+            """)
+            
+            col_sel1, col_sel2 = st.columns(2)
+            with col_sel1:
+                selected_source_col = st.selectbox(
+                    "Source Text Column (Required)",
+                    options=df_preview.columns,
+                    index=0,
+                )
+            
+            with col_sel2:
+                ctx_options = ["-- No Context Column --"] + list(df_preview.columns)
+                
+                # Auto-detect context column if available
+                default_ctx_idx = 0
+                for i, col in enumerate(df_preview.columns):
+                    if col.lower() in ["text_type", "context", "type", "description"]:
+                        default_ctx_idx = i + 1
+                        break
+                        
+                selected_context_col = st.selectbox(
+                    "Context/Type Column (Optional)",
+                    options=ctx_options,
+                    index=default_ctx_idx,
+                )
+                
+            actual_context_col = None if selected_context_col == "-- No Context Column --" else selected_context_col
+
             # Init state strictly for UI tracking
             if "translation_complete" not in st.session_state:
                 st.session_state.translation_complete = False
@@ -1026,11 +1069,11 @@ with tab1:
                         st.error(f"Failed to fetch database context: {e}")
                         st.stop()
 
-                    # Prepare Batches
+                    # Prepare Batches using dynamic columns
                     rows = ExcelHandler.read_game_sheet(
                         temp_input_path,
-                        text_column="text",
-                        context_column="text_type",
+                        text_column=selected_source_col,
+                        context_column=actual_context_col,
                     )
                     batches = ExcelHandler.create_batches(rows, batch_size=batch_size)
                     total_batches = len(batches)
@@ -1080,7 +1123,7 @@ with tab1:
                                 game_id=game_id,
                             )
 
-                            # Reviewer step (Assuming it acts on response, kept unchanged from original logic)
+                            # Reviewer step (Assuming it acts on response)
                             review = reviewer_agent(
                                 original_rows=batch_rows,
                                 translated_batch=response,
@@ -1101,7 +1144,7 @@ with tab1:
                     progress_bar.progress(1.0)
                     metric_status.metric("Status", "Completed")
                     
-                    target_col_name = f"text_{target_language.strip().replace(' ', '_')}"
+                    target_col_name = f"{target_language.strip().replace(' ', '_')}"
                     
                     ExcelHandler.write_translated_sheet(
                         original_file=temp_input_path,
@@ -1111,7 +1154,6 @@ with tab1:
                     )
                     
                     # Load the newly created file directly into memory for download
-                    # The moment the `with` block closes, the file is destroyed on the server disk!
                     with open(temp_output_path, "rb") as f:
                         st.session_state.final_download_bytes = f.read()
                         
@@ -1121,7 +1163,7 @@ with tab1:
                 # Rerun just ONCE at the very end to reveal the download block below
                 st.rerun()
 
-# ----------------------------------------------------
+            # ----------------------------------------------------
             # DOWNLOAD SECTION (MEMORY ONLY)
             # ----------------------------------------------------
             if st.session_state.get("translation_complete") and "final_download_bytes" in st.session_state:
@@ -1137,7 +1179,7 @@ with tab1:
                 # Determine extension securely
                 is_csv = uploaded_file.name.lower().endswith(".csv")
                 
-                # --- NEW CODE: Read the bytes directly into memory for preview ---
+                # --- Read the bytes directly into memory for preview ---
                 file_bytes = st.session_state.final_download_bytes
                 
                 try:
