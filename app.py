@@ -778,14 +778,34 @@ with st.sidebar:
 
     st.caption(f"Active: {model_choice}")
 
-    batch_size = st.slider(
-        "Batch Size",
-        min_value=1,
-        max_value=50,
-        value=10,
-        step=1,
-        help="Set to 1 for line-by-line or higher numbers for context-window batching.",
+    # --- UPDATED: Batching Strategy (Auto / Manual) ---
+    render_html("""
+    <div class="sidebar-section">
+        Batching Strategy
+    </div>
+    """)
+
+    batch_mode = st.radio(
+        "Batching Strategy",
+        options=["Auto", "Manual"],
+        horizontal=True,
+        help="Auto uses a smart character budget to handle mixed long/short text safely.",
+        label_visibility="collapsed",
     )
+
+    if batch_mode == "Manual":
+        manual_batch_size = st.slider(
+            "Rows per batch",
+            min_value=1,
+            max_value=50,
+            value=10,
+            step=1,
+            help="Set to 1 for line-by-line or higher numbers for fixed batching.",
+        )
+    else:
+        manual_batch_size = 10
+        st.caption("🤖 **Auto Mode Active:** Dynamically groups text by character count.")
+    # ------------------------------------------------
 
     render_html("""
     <div class="sidebar-credit">
@@ -935,8 +955,6 @@ with tab1:
         # ------------------------------------------------------------------------
 
         # Load File preview directly into memory (zero temp files generated)
-        
-        # Load File preview directly into memory (zero temp files generated)
         if uploaded_file.name.lower().endswith(".csv"):
             df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
         else:
@@ -1002,6 +1020,14 @@ with tab1:
             if "translation_complete" not in st.session_state:
                 st.session_state.translation_complete = False
 
+            # Determine batch configuration parameters
+            if batch_mode == "Auto":
+                use_smart_budget = True
+                display_desc = "Dynamic Character Budget (~3,000 chars/batch)"
+            else:
+                use_smart_budget = False
+                display_desc = f"{manual_batch_size} rows per API request"
+
             render_html("""
             <div class="section-title">
                 Translation Controls
@@ -1029,10 +1055,10 @@ with tab1:
                 render_html(f"""
                 <div class="status-card" style="margin-top:0; padding:10px 15px;">
                     <div class="status-title">
-                        Batch configuration
+                        Batch configuration ({html.escape(batch_mode)})
                     </div>
                     <div class="status-description">
-                        {batch_size} rows per API request
+                        {html.escape(display_desc)}
                         · {html.escape(target_language)} output
                     </div>
                 </div>
@@ -1069,13 +1095,19 @@ with tab1:
                         st.error(f"Failed to fetch database context: {e}")
                         st.stop()
 
-                    # Prepare Batches using dynamic columns
+                    # Prepare Batches using dynamic columns and smart budget strategy flag
                     rows = ExcelHandler.read_game_sheet(
                         temp_input_path,
                         text_column=selected_source_col,
                         context_column=actual_context_col,
                     )
-                    batches = ExcelHandler.create_batches(rows, batch_size=batch_size)
+                    
+                    batches = ExcelHandler.create_batches(
+                        rows, 
+                        batch_size=manual_batch_size, 
+                        use_smart_budget=use_smart_budget
+                    )
+                    
                     total_batches = len(batches)
                     translations_dict = {}
                     

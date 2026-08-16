@@ -53,15 +53,46 @@ class ExcelHandler:
         return records
 
     @staticmethod
-    def create_batches(rows: List[RowItem], batch_size: int) -> List[List[RowItem]]:
-        """Groups rows into user-defined batch sizes."""
-        if batch_size <= 0:
-            batch_size = 10
-
-        batches = []
-        for i in range(0, len(rows), batch_size):
-            batches.append(rows[i: i + batch_size])
-        return batches
+    def create_batches(rows: List[RowItem], batch_size: int = 10, use_smart_budget: bool = False) -> List[List[RowItem]]:
+        """Groups rows into batches using either fixed row count or a dynamic character budget."""
+        if use_smart_budget:
+            batches = []
+            current_batch = []
+            current_chars = 0
+            target_char_budget = 1000  # Safe character limit per batch
+            
+            for row in rows:
+                row_len = len(row.source_text)
+                
+                # If a single row exceeds the budget entirely, give it its own batch
+                if row_len >= target_char_budget:
+                    if current_batch:
+                        batches.append(current_batch)
+                        current_batch = []
+                        current_chars = 0
+                    batches.append([row])
+                    continue
+                
+                # If adding this row breaks the budget, push current batch and start a new one
+                if current_chars + row_len > target_char_budget:
+                    batches.append(current_batch)
+                    current_batch = [row]
+                    current_chars = row_len
+                else:
+                    current_batch.append(row)
+                    current_chars += row_len
+                    
+            if current_batch:
+                batches.append(current_batch)
+            return batches
+        else:
+            # Standard fixed row-count batching for Manual mode
+            if batch_size <= 0:
+                batch_size = 10
+            batches = []
+            for i in range(0, len(rows), batch_size):
+                batches.append(rows[i: i + batch_size])
+            return batches
 
     @staticmethod
     def write_translated_sheet(
