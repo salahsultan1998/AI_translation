@@ -56,40 +56,82 @@ class SupabaseDBEngine:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
 
-        valid_pairs = [
-            {
-                "game_id": game_key,
-                "target_language": lang_key,
-                "source_term": str(p["source"]).strip(),
-                "target_term": str(p["target"]).strip()
-            }
-            for p in pairs
-            if str(p.get("source", "")).strip() and str(p.get("target", "")).strip()
-        ]
+        # Deduplicate by source_term within this batch (last one wins)
+        unique_dict = {}
+        for p in pairs:
+            src = str(p.get("source", "")).strip()
+            tgt = str(p.get("target", "")).strip()
+            if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
+                unique_dict[src] = {
+                    "game_id": game_key,
+                    "target_language": lang_key,
+                    "source_term": src,
+                    "target_term": tgt
+                }
 
+        valid_pairs = list(unique_dict.values())
         if not valid_pairs:
             return 0
 
-        res = self.client.table("glossaries").insert(
-            valid_pairs
-        ).execute()
+        total_inserted = 0
+        batch_size = 1000
 
-        return len(res.data)
+        # Chunk into batches of 1,000 to prevent timeouts and payload limits
+        for i in range(0, len(valid_pairs), batch_size):
+            batch = valid_pairs[i:i + batch_size]
+            res = self.client.table("glossaries").upsert(
+                batch,
+                on_conflict="game_id,target_language,source_term"
+            ).execute()
+            
+            if res.data:
+                total_inserted += len(res.data)
+            else:
+                total_inserted += len(batch)
+
+        return total_inserted
     
     def upsert_single_term(self, game_id: str, target_language: str, source: str, target: str):
-        """Inserts or updates a single term in the database."""
+        """Inserts or updates a single term in the glossaries database."""
+        game_key = self._normalize_game(game_id)
+        lang_key = self._normalize_lang(target_language)
+
         data = {
-            "game_id": game_id,
-            "target_language": target_language,
-            "source": source.strip(),
-            "target": target.strip()
+            "game_id": game_key,
+            "target_language": lang_key,
+            "source_term": source.strip(),
+            "target_term": target.strip()
         }
-        # Assuming your table is named 'game_terms'
-        response = self.client.table("game_terms").upsert(
+        response = self.client.table("glossaries").upsert(
             data, 
-            on_conflict="game_id,target_language,source"
+            on_conflict="game_id,target_language,source_term"
         ).execute()
         return response
+
+    def check_conflicting_terms(self, game_id: str, target_language: str, source_terms: list) -> list:
+        """
+        Checks which source terms from the incoming list already exist 
+        in the database for the active game and target language.
+        """
+        game_key = self._normalize_game(game_id)
+        lang_key = self._normalize_lang(target_language)
+
+        if not source_terms:
+            return []
+        
+        try:
+            response = self.client.table("glossaries") \
+                .select("source_term, target_term") \
+                .eq("game_id", game_key) \
+                .eq("target_language", lang_key) \
+                .in_("source_term", source_terms) \
+                .execute()
+            
+            return response.data or []
+        except Exception as e:
+            print(f"Error checking conflicts: {e}")
+            return []
+
     def get_terms_for_game(self, game_id: str, target_language: str) -> dict:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
@@ -109,25 +151,39 @@ class SupabaseDBEngine:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
 
-        valid_pairs = [
-            {
-                "game_id": game_key,
-                "target_language": lang_key,
-                "source_text": str(p["source"]).strip(),
-                "target_text": str(p["target"]).strip()
-            }
-            for p in pairs
-            if str(p.get("source", "")).strip() and str(p.get("target", "")).strip()
-        ]
+        # Deduplicate by source_text within this batch
+        unique_dict = {}
+        for p in pairs:
+            src = str(p.get("source", "")).strip()
+            tgt = str(p.get("target", "")).strip()
+            if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
+                unique_dict[src] = {
+                    "game_id": game_key,
+                    "target_language": lang_key,
+                    "source_text": src,
+                    "target_text": tgt
+                }
 
+        valid_pairs = list(unique_dict.values())
         if not valid_pairs:
             return 0
 
-        res = self.client.table("translation_memory").insert(
-            valid_pairs
-        ).execute()
+        total_inserted = 0
+        batch_size = 1000
 
-        return len(res.data)
+        for i in range(0, len(valid_pairs), batch_size):
+            batch = valid_pairs[i:i + batch_size]
+            res = self.client.table("translation_memory").upsert(
+                batch,
+                on_conflict="game_id,target_language,source_hash"
+            ).execute()
+            
+            if res.data:
+                total_inserted += len(res.data)
+            else:
+                total_inserted += len(batch)
+
+        return total_inserted
 
     def get_tm_for_game(self, game_id: str, target_language: str) -> dict:
         game_key = self._normalize_game(game_id)

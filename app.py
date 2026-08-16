@@ -1023,7 +1023,7 @@ with tab1:
             # Determine batch configuration parameters
             if batch_mode == "Auto":
                 use_smart_budget = True
-                display_desc = "Dynamic Character Budget (~3,000 chars/batch)"
+                display_desc = "Dynamic Character Budget (~1000 chars/batch)"
             else:
                 use_smart_budget = False
                 display_desc = f"{manual_batch_size} rows per API request"
@@ -1294,7 +1294,7 @@ with tab2:
     st.divider()
 
     # ============================================================
-    # MANUAL TERM ENTRY (MULTI-ROW TABLE)
+    # MANUAL TERM ENTRY (MULTI-ROW TABLE WITH CONFLICT RESOLUTION)
     # ============================================================
     render_html(f"""
     <div class="section-title">
@@ -1302,7 +1302,7 @@ with tab2:
     </div>
     <div class="section-description">
         Add multiple glossary terms directly into the table below for <strong>{html.escape(game_id)}</strong>. 
-        You can add or delete rows dynamically.
+        Conflicting terms will be flagged for your review before saving.
     </div>
     """)
 
@@ -1322,24 +1322,103 @@ with tab2:
         }
     )
 
+    # Initialize conflict session states if not present
+    if "pending_conflicts" not in st.session_state:
+        st.session_state.pending_conflicts = None
+    if "pending_pairs_to_save" not in st.session_state:
+        st.session_state.pending_pairs_to_save = None
+
     if st.button("Save Manual Terms to Database", type="primary"):
         pairs = []
+        source_terms_list = []
         for _, row in edited_df.iterrows():
             src = str(row.get("Chinese Source", "")).strip()
             tgt = str(row.get("Target Translation", "")).strip()
             
             if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
                 pairs.append({"source": src, "target": tgt})
+                source_terms_list.append(src)
 
         if not pairs:
             st.error("Please fill in at least one valid row with both a source and target term.")
         else:
-            try:
-                count = db.upsert_terms(game_id, target_language, pairs)
-                fetch_terms.clear() # Clear cache to refresh context immediately
-                st.success(f"Successfully saved {count:,} term(s) to the database!")
-            except Exception as e:
-                st.error(f"Failed to save terms: {e}")
+            # Check against database for existing conflicts
+            existing_records = db.check_conflicting_terms(game_id, target_language, source_terms_list)
+            existing_map = {item["source_term"]: item["target_term"] for item in existing_records}
+            
+            conflicts = []
+            clean_pairs = []
+            
+            for p in pairs:
+                src = p["source"]
+                tgt = p["target"]
+                if src in existing_map:
+                    conflicts.append({
+                        "source": src,
+                        "existing_target": existing_map[src],
+                        "new_target": tgt
+                    })
+                else:
+                    clean_pairs.append(p)
+            
+            if conflicts:
+                st.session_state.pending_conflicts = conflicts
+                st.session_state.pending_pairs_to_save = clean_pairs
+                st.rerun()
+            else:
+                try:
+                    count = db.upsert_terms(game_id, target_language, clean_pairs)
+                    fetch_terms.clear()
+                    st.success(f"Successfully saved {count:,} term(s) to the database!")
+                    st.session_state.pending_conflicts = None
+                    st.session_state.pending_pairs_to_save = None
+                except Exception as e:
+                    st.error(f"Failed to save terms: {e}")
+
+    # ============================================================
+    # INTERACTIVE CONFLICT RESOLUTION UI BLOCK
+    # ============================================================
+    if st.session_state.pending_conflicts:
+        st.warning(f"⚠️ Found {len(st.session_state.pending_conflicts)} conflicting term(s) already in the database!")
+        
+        with st.form("conflict_resolution_form"):
+            st.markdown("Choose whether to **Overwrite** with your new translation or **Ignore** (keep existing) for each conflict:")
+            
+            resolution_decisions = {}
+            for idx, conflict in enumerate(st.session_state.pending_conflicts):
+                src = conflict["source"]
+                exist_tgt = conflict["existing_target"]
+                new_tgt = conflict["new_target"]
+                
+                st.markdown(f"**Chinese Source:** `{src}`")
+                decision = st.radio(
+                    f"Action for `{src}`",
+                    options=["Ignore (Keep Existing)", "Overwrite (Use New)"],
+                    index=0,
+                    key=f"conflict_{idx}",
+                    horizontal=True,
+                    format_func=lambda x: f"Existing: [{exist_tgt}] vs New: [{new_tgt}] ➔ {x}"
+                )
+                resolution_decisions[src] = decision
+                st.divider()
+
+            if st.form_submit_button("Confirm Resolutions & Save", type="primary"):
+                final_pairs_to_save = list(st.session_state.pending_pairs_to_save)
+                
+                for conflict in st.session_state.pending_conflicts:
+                    src = conflict["source"]
+                    if "Overwrite" in resolution_decisions[src]:
+                        final_pairs_to_save.append({"source": src, "target": conflict["new_target"]})
+                
+                try:
+                    count = db.upsert_terms(game_id, target_language, final_pairs_to_save)
+                    fetch_terms.clear()
+                    st.success(f"Successfully resolved conflicts and saved {count:,} term(s)!")
+                    st.session_state.pending_conflicts = None
+                    st.session_state.pending_pairs_to_save = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save resolved terms: {e}")
 
     st.divider()
 
@@ -1473,7 +1552,7 @@ with tab2:
                                 state="complete",
                                 expanded=False,
                             )
-                            st.success(f"Successfully added {count:,} glossary terms to SQLite.")
+                            st.success(f"Successfully added {count:,} glossary terms to Database.")
                         else:
                             count = db.upsert_tm(
                                 game_id,
@@ -1486,7 +1565,7 @@ with tab2:
                                 state="complete",
                                 expanded=False,
                             )
-                            st.success(f"Successfully added {count:,} Translation Memory records to SQLite.")
+                            st.success(f"Successfully added {count:,} Translation Memory records to Database.")
 
                 except Exception as e:
                     status_rag.update(label="Upload Failed", state="error")
