@@ -75,7 +75,21 @@ class SupabaseDBEngine:
         ).execute()
 
         return len(res.data)
-
+    
+    def upsert_single_term(self, game_id: str, target_language: str, source: str, target: str):
+        """Inserts or updates a single term in the database."""
+        data = {
+            "game_id": game_id,
+            "target_language": target_language,
+            "source": source.strip(),
+            "target": target.strip()
+        }
+        # Assuming your table is named 'game_terms'
+        response = self.client.table("game_terms").upsert(
+            data, 
+            on_conflict="game_id,target_language,source"
+        ).execute()
+        return response
     def get_terms_for_game(self, game_id: str, target_language: str) -> dict:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)

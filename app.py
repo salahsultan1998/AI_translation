@@ -1293,9 +1293,59 @@ with tab2:
 
     st.divider()
 
+    # ============================================================
+    # MANUAL TERM ENTRY (MULTI-ROW TABLE)
+    # ============================================================
+    render_html(f"""
+    <div class="section-title">
+        Manual Term Entry (Glossary)
+    </div>
+    <div class="section-description">
+        Add multiple glossary terms directly into the table below for <strong>{html.escape(game_id)}</strong>. 
+        You can add or delete rows dynamically.
+    </div>
+    """)
+
+    if "manual_terms_df" not in st.session_state:
+        st.session_state.manual_terms_df = pd.DataFrame(
+            {"Chinese Source": [""], "Target Translation": [""]}
+        )
+
+    edited_df = st.data_editor(
+        st.session_state.manual_terms_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="manual_terms_grid",
+        column_config={
+            "Chinese Source": st.column_config.TextColumn("Chinese Source", required=True),
+            "Target Translation": st.column_config.TextColumn(f"{target_language} Target", required=True),
+        }
+    )
+
+    if st.button("Save Manual Terms to Database", type="primary"):
+        pairs = []
+        for _, row in edited_df.iterrows():
+            src = str(row.get("Chinese Source", "")).strip()
+            tgt = str(row.get("Target Translation", "")).strip()
+            
+            if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
+                pairs.append({"source": src, "target": tgt})
+
+        if not pairs:
+            st.error("Please fill in at least one valid row with both a source and target term.")
+        else:
+            try:
+                count = db.upsert_terms(game_id, target_language, pairs)
+                fetch_terms.clear() # Clear cache to refresh context immediately
+                st.success(f"Successfully saved {count:,} term(s) to the database!")
+            except Exception as e:
+                st.error(f"Failed to save terms: {e}")
+
+    st.divider()
+
     render_html("""
     <div class="section-title">
-        Localization Knowledge Base
+        Localization Knowledge Base (File Upload)
     </div>
     """)
 
@@ -1441,7 +1491,6 @@ with tab2:
                 except Exception as e:
                     status_rag.update(label="Upload Failed", state="error")
                     st.error(f"Error uploading data: {e}")
-
 # ============================================================
 # FOOTER
 # ============================================================
