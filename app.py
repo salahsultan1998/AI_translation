@@ -811,7 +811,7 @@ def show_login_page():
 
             email = st.text_input(
                 "Email address",
-                placeholder="you@company.com",
+                placeholder="e.g. you@gmail.com",
             )
             password = st.text_input(
                 "Password",
@@ -1405,7 +1405,7 @@ with tab1:
                 )
 
                 st.download_button(
-                    label=f"  {icon('download', 16, 'white')}  Download {html.escape(target_language)} file",
+                    label=f" 📥 Download {html.escape(target_language)} file",
                     data=st.session_state.final_download_bytes,
                     file_name=f"{game_id}_{lang_clean}_{uploaded_file.name}",
                     mime=mime_type,
