@@ -811,7 +811,7 @@ def show_login_page():
 
             email = st.text_input(
                 "Email address",
-                placeholder="you@company.com",
+                placeholder="e.g. you@gmail.com",
             )
             password = st.text_input(
                 "Password",
