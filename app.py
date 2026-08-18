@@ -841,7 +841,8 @@ def show_login_page():
                         st.session_state.user = user
                         st.session_state.last_active = time.time()
                         try:
-                            cookie_controller.set("locatool_auth_token", token)
+                            cookie_controller.set("locatool_auth_token", token, max_age=3600*24*7)  # 7 days
+                            time.sleep(0.5)  # Ensure cookie is set before rerun
                         except Exception as e:
                             clear_authenticated_session()
                             st.error(f"Session error: {e}")
