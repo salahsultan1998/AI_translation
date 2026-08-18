@@ -22,3 +22,12 @@
 2. 创建sawa项目，并上传相关数据库（tmx能不能转换成excel？）
 3. 测试：DM0和sawa两个项目。（测试：上传好数据库后，需要做几份测试搞）
 4. 完成部署
+
+--- 
+*** Vrsion 2 ***
+
+1. allow the user to write some notes"备注"
+2. fix the prompt: sometimes it makes it so short. 强化提示词
+3. no need to upload excel every time "可以直接粘贴列表"
+
+
