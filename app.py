@@ -750,14 +750,27 @@ def clear_authenticated_session():
         pass
     try:
         cookie_controller.remove("locatool_auth_token")
+        # Give the browser a brief moment to process cookie deletion
+        time.sleep(0.5)
     except Exception:
         pass
+    
+    # Set a flag to prevent immediate auto-login from a lingering cookie read
+    st.session_state.just_logged_out = True
+    st.session_state.user = None
+    
+    # Clear all other keys safely without losing our logout flag
+    keys_to_keep = {"just_logged_out"}
+    for key in list(st.session_state.keys()):
+        if key not in keys_to_keep:
+            del st.session_state[key]
+            
     st.query_params.clear()
-    st.session_state.clear()
 
 
 # 1. Auto-login / session restore via browser cookie
-if st.session_state.user is None:
+
+if st.session_state.user is None and not st.session_state.get("just_logged_out", False):
     try:
         saved_token = cookie_controller.get("locatool_auth_token")
     except Exception:
