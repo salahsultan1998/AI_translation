@@ -750,14 +750,27 @@ def clear_authenticated_session():
         pass
     try:
         cookie_controller.remove("locatool_auth_token")
+        # Give the browser a brief moment to process cookie deletion
+        time.sleep(0.5)
     except Exception:
         pass
+    
+    # Set a flag to prevent immediate auto-login from a lingering cookie read
+    st.session_state.just_logged_out = True
+    st.session_state.user = None
+    
+    # Clear all other keys safely without losing our logout flag
+    keys_to_keep = {"just_logged_out"}
+    for key in list(st.session_state.keys()):
+        if key not in keys_to_keep:
+            del st.session_state[key]
+            
     st.query_params.clear()
-    st.session_state.clear()
 
 
 # 1. Auto-login / session restore via browser cookie
-if st.session_state.user is None:
+
+if st.session_state.user is None and not st.session_state.get("just_logged_out", False):
     try:
         saved_token = cookie_controller.get("locatool_auth_token")
     except Exception:
@@ -841,7 +854,8 @@ def show_login_page():
                         st.session_state.user = user
                         st.session_state.last_active = time.time()
                         try:
-                            cookie_controller.set("locatool_auth_token", token)
+                            cookie_controller.set("locatool_auth_token", token, max_age=3600*24*7)  # 7 days
+                            time.sleep(0.5)  # Ensure cookie is set before rerun
                         except Exception as e:
                             clear_authenticated_session()
                             st.error(f"Session error: {e}")
@@ -1082,118 +1096,173 @@ with tab1:
             else:
                 manual_batch_size = 10
 
-    # ── Step 2: Upload ────────────────────────────────────────
+   # ── Step 2: Input Method Selection ────────────────────────────────────────
     render_html(f"""
     <div class="sec-header">
         <div class="sec-header-icon">{icon("upload", 14, "#6366f1")}</div>
-        <div class="sec-title">Upload game text file</div>
+        <div class="sec-title">Provide game text</div>
     </div>
     <div class="sec-desc">
-        Accepts <strong>.xlsx</strong> and <strong>.csv</strong>.
-        Translate into <strong>{html.escape(target_language)}</strong>
-        for <strong>{html.escape(game_id)}</strong>.
+        Upload a file (<strong>.xlsx</strong> / <strong>.csv</strong>) or manually enter text to translate into <strong>{html.escape(target_language)}</strong> for <strong>{html.escape(game_id)}</strong>.
     </div>
     """)
 
-    # Empty State Helper
-    if "game_text_uploader" not in st.session_state or not st.session_state.game_text_uploader:
-        render_html("""
-        <div style="background: var(--surface-2); padding: 16px 20px; border-radius: var(--r-md); border: 1px dashed var(--border); margin-bottom: 16px;">
-            <div style="font-size: 0.85rem; color: var(--text-color); opacity: 0.8;">
-                <strong>💡 Pro Tip:</strong> Before uploading, ensure your file has clear headers. The app will let you select which column contains the source text to translate.
-            </div>
-        </div>
-        """)
-
-    uploaded_file = st.file_uploader(
-        "Drop your file here or click to browse",
-        type=["xlsx", "csv"],
-        key="game_text_uploader",
-        label_visibility="collapsed",
+    input_mode = st.radio(
+        "Input Mode",
+        options=["File Upload", "Manual Entry"],
+        horizontal=True,
+        label_visibility="collapsed"
     )
 
-    if uploaded_file is not None:
+    is_data_ready = False
+    df_preview = None
+    uploaded_file_name = None
+    file_bytes_buffer = None
+    is_csv = False
 
-        # Clear old translation state when a NEW file is uploaded
-        if st.session_state.get("last_uploaded_file_id") != uploaded_file.file_id:
-            st.session_state.last_uploaded_file_id = uploaded_file.file_id
-            st.session_state.translation_complete = False
-            st.session_state.pop("final_download_bytes", None)
-            st.session_state.pop("final_elapsed_time", None)
-
-        # Load file preview
-        if uploaded_file.name.lower().endswith(".csv"):
-            df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
-        else:
-            df_preview = pd.read_excel(uploaded_file).fillna("").astype(str)
-        uploaded_file.seek(0)
-
-        safe_file_name = html.escape(uploaded_file.name)
-
-        # ── Step 3: Preview ───────────────────────────────────
-        render_html(f"""
-        <div class="sec-header" style="margin-top:20px;">
-            <div class="sec-header-icon">{icon("file", 14, "#6366f1")}</div>
-            <div class="sec-title">File preview</div>
-        </div>
-        """)
-
-        render_html(f"""
-        <div class="preview-wrap">
-            <div class="preview-bar">
-                <div class="preview-bar-title">
-                    {icon("file", 14, "currentColor")}
-                    {safe_file_name}
+    if input_mode == "File Upload":
+        # Empty State Helper
+        if "game_text_uploader" not in st.session_state or not st.session_state.game_text_uploader:
+            render_html("""
+            <div style="background: var(--surface-2); padding: 16px 20px; border-radius: var(--r-md); border: 1px dashed var(--border); margin-bottom: 16px;">
+                <div style="font-size: 0.85rem; color: var(--text-color); opacity: 0.8;">
+                    <strong>💡 Pro Tip:</strong> Before uploading, ensure your file has clear headers. The app will let you select which column contains the source text.
                 </div>
-                <div class="preview-bar-count">{len(df_preview):,} rows</div>
-            </div>
-        </div>
-        """)
-
-        st.dataframe(df_preview, use_container_width=True, height=260)
-
-        if len(df_preview.columns) == 0:
-            st.error("The uploaded file has no columns.")
-        else:
-
-            # ── Step 4: Column Mapping ────────────────────────
-            render_html(f"""
-            <div class="sec-header" style="margin-top:20px;">
-                <div class="sec-header-icon">{icon("columns", 14, "#6366f1")}</div>
-                <div class="sec-title">Map data columns</div>
-            </div>
-            <div class="sec-desc">
-                Select which column contains the source text to translate,
-                and optionally a context/type column to improve AI accuracy.
             </div>
             """)
 
-            col_sel1, col_sel2 = st.columns(2)
+        uploaded_file = st.file_uploader(
+            "Drop your file here or click to browse",
+            type=["xlsx", "csv"],
+            key="game_text_uploader",
+            label_visibility="collapsed",
+        )
 
-            with col_sel1:
-                selected_source_col = st.selectbox(
-                    "Source text column (required)",
-                    options=df_preview.columns,
-                    index=0,
-                )
+        if uploaded_file is not None:
+            # Clear old translation state when a NEW file is uploaded
+            if st.session_state.get("last_uploaded_file_id") != uploaded_file.file_id:
+                st.session_state.last_uploaded_file_id = uploaded_file.file_id
+                st.session_state.translation_complete = False
+                st.session_state.pop("final_download_bytes", None)
+                st.session_state.pop("final_elapsed_time", None)
 
-            with col_sel2:
-                ctx_options = ["— No context column —"] + list(df_preview.columns)
-                default_ctx_idx = 0
-                for i, col in enumerate(df_preview.columns):
-                    if col.lower() in ["text_type", "context", "type", "description"]:
-                        default_ctx_idx = i + 1
-                        break
-                selected_context_col = st.selectbox(
-                    "Context / type column (optional)",
-                    options=ctx_options,
-                    index=default_ctx_idx,
-                )
+            is_csv = uploaded_file.name.lower().endswith(".csv")
+            if is_csv:
+                df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
+            else:
+                df_preview = pd.read_excel(uploaded_file).fillna("").astype(str)
+            
+            uploaded_file.seek(0)
+            file_bytes_buffer = uploaded_file.getbuffer()
+            uploaded_file_name = uploaded_file.name
+            is_data_ready = True
 
-            actual_context_col = (
-                None if selected_context_col == "— No context column —"
-                else selected_context_col
+    else:
+        # Manual Entry State
+        if "manual_trans_df" not in st.session_state:
+            st.session_state.manual_trans_df = pd.DataFrame(
+                {"Source Text": [""], "Context": [""]}
             )
+        
+        st.caption("Paste or type your text directly below. Add new rows as needed.")
+        edited_df = st.data_editor(
+            st.session_state.manual_trans_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Source Text": st.column_config.TextColumn("Source text (required)", required=True),
+                "Context": st.column_config.TextColumn("Context / type (optional)")
+            }
+        )
+
+        # Check if user has actually entered text
+        valid_rows = edited_df[edited_df["Source Text"].str.strip() != ""]
+        if not valid_rows.empty:
+            df_preview = edited_df.copy()
+            # Convert to CSV in memory so the pipeline handles it like a file upload
+            csv_buffer = io.BytesIO()
+            df_preview.to_csv(csv_buffer, index=False)
+            file_bytes_buffer = csv_buffer.getvalue()
+            uploaded_file_name = "manual_input.csv"
+            is_csv = True
+            is_data_ready = True
+
+            # Clear old state if the manual text is edited
+            current_hash = hash(file_bytes_buffer)
+            if st.session_state.get("last_manual_hash") != current_hash:
+                st.session_state.last_manual_hash = current_hash
+                st.session_state.translation_complete = False
+                st.session_state.pop("final_download_bytes", None)
+                st.session_state.pop("final_elapsed_time", None)
+
+    # ── Step 3 & 4: Preview & Mapping ───────────────────────────────────
+    if is_data_ready and df_preview is not None:
+        safe_file_name = html.escape(uploaded_file_name)
+
+        if len(df_preview.columns) == 0:
+            st.error("The provided data has no columns.")
+        else:
+            if input_mode == "File Upload":
+                # Only show file preview and mapping if a file was uploaded 
+                # (Manual entry already shows the grid)
+                render_html(f"""
+                <div class="sec-header" style="margin-top:20px;">
+                    <div class="sec-header-icon">{icon("file", 14, "#6366f1")}</div>
+                    <div class="sec-title">File preview</div>
+                </div>
+                <div class="preview-wrap">
+                    <div class="preview-bar">
+                        <div class="preview-bar-title">
+                            {icon("file", 14, "currentColor")}
+                            {safe_file_name}
+                        </div>
+                        <div class="preview-bar-count">{len(df_preview):,} rows</div>
+                    </div>
+                </div>
+                """)
+                st.dataframe(df_preview, use_container_width=True, height=260)
+
+                render_html(f"""
+                <div class="sec-header" style="margin-top:20px;">
+                    <div class="sec-header-icon">{icon("columns", 14, "#6366f1")}</div>
+                    <div class="sec-title">Map data columns</div>
+                </div>
+                <div class="sec-desc">
+                    Select which column contains the source text to translate,
+                    and optionally a context/type column to improve AI accuracy.
+                </div>
+                """)
+
+                col_sel1, col_sel2 = st.columns(2)
+                with col_sel1:
+                    selected_source_col = st.selectbox(
+                        "Source text column (required)",
+                        options=df_preview.columns,
+                        index=0,
+                    )
+                with col_sel2:
+                    ctx_options = ["— No context column —"] + list(df_preview.columns)
+                    default_ctx_idx = 0
+                    for i, col in enumerate(df_preview.columns):
+                        if col.lower() in ["text_type", "context", "type", "description"]:
+                            default_ctx_idx = i + 1
+                            break
+                    selected_context_col = st.selectbox(
+                        "Context / type column (optional)",
+                        options=ctx_options,
+                        index=default_ctx_idx,
+                    )
+                
+                actual_context_col = (
+                    None if selected_context_col == "— No context column —"
+                    else selected_context_col
+                )
+            else:
+                # Auto-map for Manual Entry
+                selected_source_col = "Source Text"
+                # Only use context if the user actually typed something in the context column
+                has_context = "Context" in df_preview.columns and not df_preview["Context"].eq("").all()
+                actual_context_col = "Context" if has_context else None
 
             if "translation_complete" not in st.session_state:
                 st.session_state.translation_complete = False
@@ -1205,6 +1274,24 @@ with tab1:
             else:
                 use_smart_budget = False
                 display_desc = f"{manual_batch_size} rows per API request"
+            # ── Step 4.5: Custom Instructions ──────────────────
+            render_html(f"""
+            <div class="sec-header" style="margin-top:20px;">
+                <div class="sec-header-icon">{icon("cpu", 14, "#6366f1")}</div>
+                <div class="sec-title">Custom AI Instructions (Optional)</div>
+            </div>
+            <div class="sec-desc">
+                Add specific rules for this translation run (e.g., "Keep character names in English", "Use a casual tone"). 
+                Leave empty to use the default Game Profile.
+            </div>
+            """)
+
+            custom_instructions_input = st.text_area(
+                "Custom AI Instructions",
+                placeholder="Type your on-the-fly instructions here...",
+                label_visibility="collapsed",
+                height=100
+            )
 
             # ── Step 5: Start ──────────────────────────
             render_html(f"""
@@ -1232,11 +1319,11 @@ with tab1:
                 st.session_state.translation_complete = False
 
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_input_path = os.path.join(temp_dir, f"input_{uploaded_file.name}")
-                    temp_output_path = os.path.join(temp_dir, f"output_{uploaded_file.name}")
+                    temp_input_path = os.path.join(temp_dir, f"input_{uploaded_file_name}")
+                    temp_output_path = os.path.join(temp_dir, f"output_{uploaded_file_name}")
 
                     with open(temp_input_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
+                        f.write(file_bytes_buffer)
 
                     try:
                         glossary_dict = fetch_terms(db, game_id, target_language)
@@ -1320,6 +1407,7 @@ with tab1:
                                 model_name=model_choice,
                                 fallback_model_name="openai/gpt-4o-mini",
                                 game_id=game_id,
+                                custom_instructions=custom_instructions_input, # <--- NEW ARGUMENT ADDED
                             )
 
                             review = reviewer_agent(
@@ -1386,7 +1474,6 @@ with tab1:
                 </div>
                 """)
 
-                is_csv = uploaded_file.name.lower().endswith(".csv")
                 file_bytes = st.session_state.final_download_bytes
 
                 try:
@@ -1407,12 +1494,11 @@ with tab1:
                 st.download_button(
                     label=f" 📥 Download {html.escape(target_language)} file",
                     data=st.session_state.final_download_bytes,
-                    file_name=f"{game_id}_{lang_clean}_{uploaded_file.name}",
+                    file_name=f"{game_id}_{lang_clean}_{uploaded_file_name}",
                     mime=mime_type,
                     type="primary",
                     use_container_width=True,
                 )
-
 
 # ============================================================
 # TAB 2 — DATABASE & CONTEXT

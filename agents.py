@@ -129,6 +129,7 @@ def translator_agent(
     model_name: str = DEFAULT_MODEL,
     fallback_model_name: str | None = None,
     game_id: str = "",
+    custom_instructions: str = "", # <--- NEW PARAMETER
 ) -> BatchTranslationResponse:
     target_lang = batch_request.target_language
 
@@ -158,6 +159,11 @@ Respond ONLY with a valid JSON object matching this exact structure:
     user_message = f"### TARGET LANGUAGE: {target_lang}\n\n"
     if rag_context:
         user_message += f"### REFERENCE CONTEXT:\n{rag_context}\n\n"
+    
+    # <--- NEW INJECTION: Add custom instructions if provided
+    if custom_instructions.strip():
+        user_message += f"### CUSTOM INSTRUCTIONS (PRIORITY OVERRIDES):\n{custom_instructions.strip()}\n\n"
+        
     if feedback:
         user_message += f"### PREVIOUS ATTEMPT FIXES REQUIRED:\n{feedback}\n\n"
 
@@ -174,7 +180,7 @@ Respond ONLY with a valid JSON object matching this exact structure:
         temperature=0.2,
         fallback_model_name=fallback_model_name,
     )
-
+    print("prompt:", user_message)
     content = response.choices[0].message.content or ""
     clean_json = extract_json_string(content)
 
@@ -184,7 +190,6 @@ Respond ONLY with a valid JSON object matching this exact structure:
         return BatchTranslationResponse(**parsed_data)
     except Exception as e:
         raise ValueError(f"Invalid JSON returned from model: {e}\nRaw: {content[:200]}")
-
 # ==========================================
 # 2. ZERO-COST PYTHON REVIEWER AGENT
 # ==========================================
