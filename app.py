@@ -704,6 +704,15 @@ hr { border-color: var(--border) !important; }
 ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 99px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
 </style>
+
+<script>
+// Prevent Ctrl+C / Cmd+C from triggering Streamlit's cache-clear shortcut modal
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        e.stopImmediatePropagation();
+    }
+}, true);
+</script>
 """)
 
 
@@ -932,6 +941,7 @@ with st.sidebar:
         "DM_03",
         "Tarbi3a_Baloot",
         "Baloot_Challenges",
+        "Direct_translation",
         "+ Add New Project",
     ]
 
@@ -1075,6 +1085,7 @@ with tab1:
             model_options = [
                 "qwen/qwen3-235b-a22b-2507",
                 "qwen/qwen3.7-plus",
+                "google/gemini-3.1-flash-lite"
             ]
             model_choice = st.selectbox(
                 "AI Model",
