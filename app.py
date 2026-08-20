@@ -942,6 +942,7 @@ with st.sidebar:
         "Tarbi3a_Baloot",
         "Baloot_Challenges",
         "Direct_translation",
+        "sawa",
         "+ Add New Project",
     ]
 

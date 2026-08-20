@@ -25,6 +25,10 @@
     "Baloot_Challenges": {
       "genre": "Card Game / Casual",
       "tone_override": "Tone must be casual, friendly, lively, and culturally localized to Gulf card-playing culture. Use warm, social, and enthusiastic phrasing suited for traditional card gaming sessions and quick social interactions."
+    },
+    "sawa": {
+      "genre": "Live Social App / Streaming",
+      "tone_override": "Tone must be warm, casual, vibrant, and engaging. Infuse a light, friendly Saudi/Khaleeji social vibe that feels welcoming, lively, and natural for voice rooms, live streams, and community chat. Keep language smooth, modern, and youth-friendly without heavy local slang that might alienate broader Arabic speakers."
     }
   }
 }
