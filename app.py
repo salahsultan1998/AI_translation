@@ -1086,7 +1086,8 @@ with tab1:
             model_options = [
                 "qwen/qwen3-235b-a22b-2507",
                 "qwen/qwen3.7-plus",
-                "google/gemini-3.1-flash-lite"
+                "google/gemini-3.1-flash-lite",
+                "google/gemini-3.7-flash"
             ]
             model_choice = st.selectbox(
                 "AI Model",
