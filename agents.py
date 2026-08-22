@@ -180,8 +180,8 @@ Respond ONLY with a valid JSON object matching this exact structure:
         temperature=0.2,
         fallback_model_name=fallback_model_name,
     )
-    print("prompt:", user_message)
-    print("response:", response)
+    # print("prompt:", user_message)
+    # print("response:", response)
     content = response.choices[0].message.content or ""
     clean_json = extract_json_string(content)
 
