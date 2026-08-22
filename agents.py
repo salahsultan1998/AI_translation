@@ -191,6 +191,89 @@ Respond ONLY with a valid JSON object matching this exact structure:
         return BatchTranslationResponse(**parsed_data)
     except Exception as e:
         raise ValueError(f"Invalid JSON returned from model: {e}\nRaw: {content[:200]}")
+
+
+def suggest_term_candidates(
+    rows: list,
+    target_language: str,  
+    game_id: str = "",
+    model_name: str = DEFAULT_MODEL,
+    fallback_model_name: str | None = None,
+    max_terms: int = 12,
+) -> list[dict]:
+    """Uses the LLM to suggest missing or stale terminology from the source text before translation."""
+    if not rows:
+        return []
+
+    payload = []
+    for row in rows:
+        source_text = str(getattr(row, "source_text", "") or "").strip()
+        if not source_text:
+            continue
+        context = str(getattr(row, "context", "") or "").strip()
+        payload.append({
+            "row_id": getattr(row, "row_id", None),
+            "source_text": source_text,
+            "context": context,
+        })
+
+    if not payload:
+        return []
+
+    system_prompt = (
+        "You are reviewing game text for terminology consistency. Identify important fixed terms, names, UI labels, "
+        "and recurring nouns that should be standardized in the target language. Return only valid JSON. "
+        "Do not invent terms that are not present in the source text. Prefer short source terms that appear as exact text fragments."
+    )
+    user_message = (
+        f"### TARGET LANGUAGE: {target_language}\n\n"
+        f"### TASK: Scan the source text and suggest high-confidence terminology candidates that should be reviewed before translation.\n\n"
+        f"Return a JSON object with this exact structure: {{\"terms\": [{{\"source_term\": \"...\", \"recommended_target\": \"...\", \"reason\": \"...\"}}]}}\n\n"
+        f"Keep it to at most {max_terms} terms. Only include terms that are clearly important and likely to be reused.\n\n"
+        f"### SOURCE TEXT:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+    response = _create_chat_completion(
+        model_name=model_name,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.2,
+        fallback_model_name=fallback_model_name,
+    )
+    content = response.choices[0].message.content or ""
+    clean_json = extract_json_string(content)
+
+    try:
+        parsed = json.loads(clean_json)
+        terms = parsed.get("terms", []) if isinstance(parsed, dict) else []
+    except Exception:
+        return []
+
+    normalized = []
+    seen = set()
+    for entry in terms:
+        if not isinstance(entry, dict):
+            continue
+        source_term = str(entry.get("source_term") or "").strip()
+        recommended_target = str(entry.get("recommended_target") or entry.get("target_term") or "").strip()
+        if not source_term or not recommended_target:
+            continue
+        key = source_term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({
+            "source_term": source_term,
+            "suggested_target": recommended_target,
+            "source": "llm",
+            "context": "LLM terminology suggestion",
+            "approved": True,
+            "reason": str(entry.get("reason") or "Suggested by LLM"),
+        })
+
+    return normalized
 # ==========================================
 # 2. ZERO-COST PYTHON REVIEWER AGENT
 # ==========================================
