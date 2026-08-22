@@ -3,10 +3,14 @@ import time
 import html
 import tempfile
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from textwrap import dedent
 import pandas as pd
 import streamlit as st
 from streamlit_cookies_controller import CookieController
+
+# Number of translation batches to run in parallel against the LLM API.
+MAX_CONCURRENT_BATCHES = 4
 
 from excel_engine import ExcelHandler
 from db_engine import SupabaseDBEngine
@@ -1359,7 +1363,10 @@ with tab1:
                         context_column=actual_context_col,
                     )
 
-                    batches = ExcelHandler.create_batches(
+                    # Dedupe identical rows and group near-duplicates (same text,
+                    # different embedded number) so they translate once / together
+                    # instead of scattering across separate batches.
+                    batches, alias_map = ExcelHandler.prepare_batches(
                         rows,
                         batch_size=manual_batch_size,
                         use_smart_budget=use_smart_budget,
@@ -1388,55 +1395,75 @@ with tab1:
 
                     start_time = time.time()
 
-                    for current_idx, batch_rows in enumerate(batches):
-                        progress_val = current_idx / max(1, total_batches)
-                        progress_bar.progress(progress_val)
-
-                        elapsed = time.time() - start_time
-                        mins, secs = divmod(int(elapsed), 60)
-
-                        metric_progress.metric(
-                            "Batch", f"{current_idx + 1} / {total_batches}"
-                        )
-                        metric_time.metric("Elapsed", f"{mins:02d}:{secs:02d}")
-                        metric_status.metric("Status", "Translating")
-
+                    def _translate_one_batch(batch_idx, batch_rows):
                         rag_context = rag.get_batch_context(
                             batch_rows=batch_rows,
                             target_language=target_language,
                         )
 
                         batch_request = BatchTranslationRequest(
-                            batch_id=current_idx + 1,
+                            batch_id=batch_idx + 1,
                             rows=batch_rows,
                             target_language=target_language,
                         )
 
-                        try:
-                            response = translator_agent(
-                                batch_request=batch_request,
-                                rag_context=rag_context,
-                                feedback="",
-                                model_name=model_choice,
-                                fallback_model_name="openai/gpt-4o-mini",
-                                game_id=game_id,
-                                custom_instructions=custom_instructions_input, # <--- NEW ARGUMENT ADDED
+                        response = translator_agent(
+                            batch_request=batch_request,
+                            rag_context=rag_context,
+                            feedback="",
+                            model_name=model_choice,
+                            fallback_model_name="openai/gpt-4o-mini",
+                            game_id=game_id,
+                            custom_instructions=custom_instructions_input,
+                        )
+
+                        reviewer_agent(
+                            original_rows=batch_rows,
+                            translated_batch=response,
+                        )
+
+                        return response
+
+                    completed_batches = 0
+
+                    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_BATCHES) as executor:
+                        future_to_batch = {
+                            executor.submit(_translate_one_batch, idx, batch_rows): (idx, batch_rows)
+                            for idx, batch_rows in enumerate(batches)
+                        }
+
+                        for future in as_completed(future_to_batch):
+                            current_idx, batch_rows = future_to_batch[future]
+
+                            try:
+                                response = future.result()
+                                for item in (response.translations or []):
+                                    translations_dict[item.row_id] = item.translated_text
+                            except Exception as e:
+                                st.toast(f"Batch {current_idx + 1} error: {e}", icon="⚠️")
+
+                            for r in batch_rows:
+                                if r.row_id not in translations_dict:
+                                    translations_dict[r.row_id] = r.source_text
+
+                            completed_batches += 1
+                            elapsed = time.time() - start_time
+                            mins, secs = divmod(int(elapsed), 60)
+
+                            progress_bar.progress(completed_batches / max(1, total_batches))
+                            metric_progress.metric(
+                                "Batch", f"{completed_batches} / {total_batches}"
                             )
+                            metric_time.metric("Elapsed", f"{mins:02d}:{secs:02d}")
+                            metric_status.metric("Status", "Translating")
 
-                            review = reviewer_agent(
-                                original_rows=batch_rows,
-                                translated_batch=response,
-                            )
-
-                            for item in (response.translations or []):
-                                translations_dict[item.row_id] = item.translated_text
-
-                        except Exception as e:
-                            st.toast(f"Batch {current_idx + 1} error: {e}", icon="⚠️")
-
-                        for r in batch_rows:
-                            if r.row_id not in translations_dict:
-                                translations_dict[r.row_id] = r.source_text
+                    # Fill in rows that were skipped as exact/near duplicates
+                    # by reusing their representative row's translation.
+                    row_lookup = {r.row_id: r for r in rows}
+                    for dup_row_id, rep_row_id in alias_map.items():
+                        translations_dict[dup_row_id] = translations_dict.get(
+                            rep_row_id, row_lookup[dup_row_id].source_text
+                        )
 
                     progress_bar.progress(1.0)
                     metric_status.metric("Status", "Complete ✓")

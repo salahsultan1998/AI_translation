@@ -1,7 +1,12 @@
 import os
+import re
 import pandas as pd
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from custom_types import RowItem
+
+# Matches runs of digits, used to detect rows that are identical except for
+# an embedded number (e.g. "主城装饰：1级" vs "主城装饰：2级").
+_NUMBER_PATTERN = re.compile(r"\d+")
 
 
 class ExcelHandler:
@@ -53,46 +58,123 @@ class ExcelHandler:
         return records
 
     @staticmethod
-    def create_batches(rows: List[RowItem], batch_size: int = 10, use_smart_budget: bool = False) -> List[List[RowItem]]:
-        """Groups rows into batches using either fixed row count or a dynamic character budget."""
+    def deduplicate_rows(rows: List[RowItem]) -> Tuple[List[RowItem], Dict[int, int]]:
+        """Collapses rows with byte-identical source_text down to one representative
+        row. Returns (unique_rows, alias_map), where alias_map maps a duplicate
+        row's row_id to the representative row_id whose translation it should
+        reuse. This avoids paying for (and re-translating) the exact same string
+        twice, and guarantees identical output for identical input."""
+        seen: Dict[str, int] = {}
+        unique_rows: List[RowItem] = []
+        alias_map: Dict[int, int] = {}
+
+        for row in rows:
+            key = row.source_text
+            representative_id = seen.get(key)
+            if representative_id is not None:
+                alias_map[row.row_id] = representative_id
+            else:
+                seen[key] = row.row_id
+                unique_rows.append(row)
+
+        return unique_rows, alias_map
+
+    @staticmethod
+    def group_near_duplicates(rows: List[RowItem]) -> List[List[RowItem]]:
+        """Groups rows whose source_text is identical except for embedded
+        numbers (e.g. "Level 1" / "Level 2") into the same family, so a later
+        batching step keeps them together in one LLM call. Translating them
+        side by side keeps phrasing and target-language grammar (e.g. Arabic
+        singular/dual/plural agreement) consistent across the variants,
+        without us mechanically splicing numbers into a template ourselves.
+        Rows without a near-duplicate partner form a family of one."""
+        families: Dict[str, List[RowItem]] = {}
+        order: List[str] = []
+
+        for row in rows:
+            template = _NUMBER_PATTERN.sub("#", row.source_text)
+            if template not in families:
+                families[template] = []
+                order.append(template)
+            families[template].append(row)
+
+        return [families[key] for key in order]
+
+    @staticmethod
+    def create_batches(families: List[List[RowItem]], batch_size: int = 10, use_smart_budget: bool = False) -> List[List[RowItem]]:
+        """Packs families (groups of rows that must stay together) into batches
+        using either fixed row count or a dynamic character budget. A family is
+        never split across two batches."""
         if use_smart_budget:
             batches = []
-            current_batch = []
+            current_batch: List[RowItem] = []
             current_chars = 0
             target_char_budget = 1000  # Safe character limit per batch
-            
-            for row in rows:
-                row_len = len(row.source_text)
-                
-                # If a single row exceeds the budget entirely, give it its own batch
-                if row_len >= target_char_budget:
+
+            for family in families:
+                family_chars = sum(len(r.source_text) for r in family)
+
+                # If a single family exceeds the budget entirely, give it its own batch
+                if family_chars >= target_char_budget:
                     if current_batch:
                         batches.append(current_batch)
                         current_batch = []
                         current_chars = 0
-                    batches.append([row])
+                    batches.append(list(family))
                     continue
-                
-                # If adding this row breaks the budget, push current batch and start a new one
-                if current_chars + row_len > target_char_budget:
+
+                # If adding this family breaks the budget, push current batch and start a new one
+                if current_chars + family_chars > target_char_budget:
                     batches.append(current_batch)
-                    current_batch = [row]
-                    current_chars = row_len
+                    current_batch = list(family)
+                    current_chars = family_chars
                 else:
-                    current_batch.append(row)
-                    current_chars += row_len
-                    
+                    current_batch.extend(family)
+                    current_chars += family_chars
+
             if current_batch:
                 batches.append(current_batch)
             return batches
         else:
-            # Standard fixed row-count batching for Manual mode
+            # Fixed row-count batching for Manual mode
             if batch_size <= 0:
                 batch_size = 10
             batches = []
-            for i in range(0, len(rows), batch_size):
-                batches.append(rows[i: i + batch_size])
+            current_batch: List[RowItem] = []
+
+            for family in families:
+                if len(family) >= batch_size:
+                    if current_batch:
+                        batches.append(current_batch)
+                        current_batch = []
+                    batches.append(list(family))
+                    continue
+
+                if len(current_batch) + len(family) > batch_size:
+                    batches.append(current_batch)
+                    current_batch = list(family)
+                else:
+                    current_batch.extend(family)
+
+            if current_batch:
+                batches.append(current_batch)
             return batches
+
+    @staticmethod
+    def prepare_batches(rows: List[RowItem], batch_size: int = 10, use_smart_budget: bool = False) -> Tuple[List[List[RowItem]], Dict[int, int]]:
+        """Full preprocessing pipeline: deduplicates identical rows, groups
+        near-duplicates so they translate together for consistency, then packs
+        the result into batches.
+
+        Returns (batches, alias_map). After translating every row in `batches`,
+        apply alias_map to fill in the skipped duplicate rows:
+            for dup_id, rep_id in alias_map.items():
+                translations[dup_id] = translations[rep_id]
+        """
+        unique_rows, alias_map = ExcelHandler.deduplicate_rows(rows)
+        families = ExcelHandler.group_near_duplicates(unique_rows)
+        batches = ExcelHandler.create_batches(families, batch_size=batch_size, use_smart_budget=use_smart_budget)
+        return batches, alias_map
 
     @staticmethod
     def write_translated_sheet(

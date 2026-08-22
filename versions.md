@@ -29,5 +29,7 @@
 1. allow the user to write some notes"备注"
 2. fix the prompt: sometimes it makes it so short. 强化提示词
 3. no need to upload excel every time "可以直接粘贴列表"
-
+---
+*** Version 3 ***
+1. 加“×”按钮，关闭当前情况。
 

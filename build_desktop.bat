@@ -21,8 +21,14 @@ echo Building LocaTool.exe ...
   --add-data "prompts.json;." ^
   desktop_app.py
 
+if exist ".env" (
+    copy /Y ".env" "dist\LocaTool\.env" >nul
+    echo Copied .env into dist\LocaTool\
+) else (
+    echo WARNING: no .env found in the project folder - the app will not
+    echo be able to connect to Supabase or the AI models until you add one.
+)
+
 echo.
 echo Done. The app is at dist\LocaTool\LocaTool.exe
-echo IMPORTANT: copy your .env file into dist\LocaTool\ (next to LocaTool.exe)
-echo so the packaged app can connect to Supabase and the AI models.
 pause
