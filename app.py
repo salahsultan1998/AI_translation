@@ -15,7 +15,7 @@ MAX_CONCURRENT_BATCHES = 4
 from excel_engine import ExcelHandler
 from db_engine import SupabaseDBEngine
 from rag_engine import RAGEngine
-from agents import DEFAULT_MODEL, translator_agent, reviewer_agent
+from agents import DEFAULT_MODEL, translator_agent, reviewer_agent, suggest_term_candidates
 from custom_types import BatchTranslationRequest
 
 
@@ -60,6 +60,101 @@ def fetch_terms(_db, game_id, target_language):
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_tm(_db, game_id, target_language):
     return _db.get_tm_for_game(game_id, target_language)
+
+
+def build_term_review_dataframe(rows, game_id, target_language, model_choice):
+    """Collect exact glossary hits and LLM-suggested terms for a pre-translation review."""
+    if not rows:
+        return pd.DataFrame(columns=["source_term", "suggested_target", "approved", "source", "context", "reason"])
+
+    try:
+        glossary_dict = fetch_terms(db, game_id, target_language)
+        tm_dict = fetch_tm(db, game_id, target_language)
+        game_profile = fetch_game_profile(db, game_id)
+        rag = RAGEngine()
+        rag.load_resources(glossary_dict=glossary_dict, tm_dict=tm_dict, game_profile=game_profile)
+        exact_candidates = rag.build_review_candidates(rows, target_language)
+    except Exception:
+        exact_candidates = []
+
+    llm_candidates = []
+    try:
+        llm_candidates = suggest_term_candidates(
+            rows=rows,
+            target_language=target_language,
+            game_id=game_id,
+            model_name=model_choice,
+            fallback_model_name="openai/gpt-4o-mini",
+            max_terms=12,
+        )
+    except Exception:
+        llm_candidates = []
+
+    merged = {}
+    for candidate in exact_candidates + llm_candidates:
+        key = str(candidate.get("source_term") or "").strip().lower()
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = {
+                "source_term": str(candidate.get("source_term") or "").strip(),
+                "suggested_target": str(candidate.get("suggested_target") or "").strip(),
+                "approved": bool(candidate.get("approved", True)),
+                "source": str(candidate.get("source") or "manual").strip(),
+                "context": str(candidate.get("context") or "").strip(),
+                "reason": str(candidate.get("reason") or "").strip(),
+            }
+
+    review_rows = []
+    for source_term, payload in merged.items():
+        if not source_term:
+            continue
+        review_rows.append({
+            "source_term": payload["source_term"],
+            "suggested_target": payload["suggested_target"],
+            "approved": payload["approved"],
+            "source": payload["source"],
+            "context": payload["context"],
+            "reason": payload["reason"],
+        })
+
+    review_df = pd.DataFrame(review_rows)
+    if review_df.empty:
+        return pd.DataFrame(columns=["source_term", "suggested_target", "approved", "source", "context", "reason"])
+
+    review_df = review_df[["source_term", "suggested_target", "approved", "source", "context", "reason"]]
+    review_df = review_df.sort_values(by=["source_term"], kind="mergesort").reset_index(drop=True)
+    return review_df
+
+
+def save_approved_terms(game_id, target_language, review_df):
+    if review_df is None or review_df.empty:
+        return {}
+
+    approved_rows = review_df[review_df["approved"].astype(str).str.lower().isin(["true", "yes", "1"])].copy()
+    approved_pairs = []
+    approved_map = {}
+
+    for _, row in approved_rows.iterrows():
+        source_term = str(row.get("source_term") or "").strip()
+        if not source_term:
+            continue
+        final_target = str(row.get("edited_target") or row.get("suggested_target") or "").strip()
+        if not final_target:
+            continue
+        approved_pairs.append({"source": source_term, "target": final_target})
+        approved_map[source_term] = final_target
+
+    if approved_pairs:
+        try:
+            count = db.upsert_terms(game_id, target_language, approved_pairs)
+            fetch_terms.clear()
+            return {"count": count, "approved_map": approved_map}
+        except Exception as e:
+            st.error(f"Failed to save approved terms: {e}")
+            return {"count": 0, "approved_map": approved_map}
+
+    return {"count": 0, "approved_map": approved_map}
 
 
 # ============================================================
@@ -1331,7 +1426,7 @@ with tab1:
                 use_container_width=True,
             )
 
-            # ── Step 6: Translation Engine + Progress ───────
+            # ── Step 6: Term review + Translation Engine + Progress ───────
             if start_clicked:
                 st.session_state.translation_complete = False
 
@@ -1362,6 +1457,59 @@ with tab1:
                         text_column=selected_source_col,
                         context_column=actual_context_col,
                     )
+
+                    review_df = build_term_review_dataframe(rows, game_id, target_language, model_choice)
+                    if not review_df.empty:
+                        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+                        render_html(f"""
+                        <div class="sec-header" style="margin-top:20px;">
+                            <div class="sec-header-icon">{icon("check-square", 14, "#6366f1")}</div>
+                            <div class="sec-title">Review terms before translation</div>
+                        </div>
+                        <div class="sec-desc">
+                            We found glossary matches and AI-suggested terminology. Review, edit, and approve the final list before starting translation.
+                        </div>
+                        """)
+                        edited_review_df = st.data_editor(
+                            review_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            disabled=["source_term", "source", "context", "reason"],
+                            column_config={
+                                "source_term": st.column_config.TextColumn("Source term"),
+                                "suggested_target": st.column_config.TextColumn("Approved target"),
+                                "approved": st.column_config.CheckboxColumn("Approve"),
+                                "source": st.column_config.TextColumn("Source"),
+                                "context": st.column_config.TextColumn("Context"),
+                                "reason": st.column_config.TextColumn("Reason"),
+                            },
+                            key="term_review_editor",
+                        )
+
+                        edited_review_df = edited_review_df.copy()
+                        if "suggested_target" in edited_review_df.columns:
+                            edited_review_df["edited_target"] = edited_review_df["suggested_target"]
+                            edited_review_df = edited_review_df.rename(columns={"suggested_target": "suggested_target"})
+
+                        confirm_terms = st.button("✓ Confirm terms and start translation", type="primary", use_container_width=True)
+                        if not confirm_terms:
+                            st.stop()
+
+                        save_result = save_approved_terms(game_id, target_language, edited_review_df)
+                        if save_result.get("count", 0):
+                            st.success(f"Saved {save_result['count']} approved glossary term(s) to the database.")
+                        elif any(str(value).lower() in ["true", "yes", "1"] for value in edited_review_df["approved"].astype(str)):
+                            st.info("Reviewed terms were checked, but no valid approved entries were saved.")
+
+                        approved_map = save_result.get("approved_map", {})
+                        if approved_map:
+                            glossary_dict = {**glossary_dict, **approved_map}
+                            rag = RAGEngine()
+                            rag.load_resources(
+                                glossary_dict=glossary_dict,
+                                tm_dict=tm_dict,
+                                game_profile=game_profile,
+                            )
 
                     # Dedupe identical rows and group near-duplicates (same text,
                     # different embedded number) so they translate once / together

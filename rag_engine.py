@@ -66,6 +66,49 @@ class RAGEngine:
             
         return matches
 
+    def get_exact_term_candidates(self, source_text: str, context: str | None = None, row_id: int | None = None) -> list[dict]:
+        """Returns exact glossary candidates ready for a human review step."""
+        if not self.has_glossary:
+            return []
+
+        matches = []
+        seen = set()
+        for chinese_term, target_term in self.get_exact_terms(source_text):
+            key = (chinese_term.lower(), target_term.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({
+                "row_id": row_id,
+                "source_term": chinese_term,
+                "suggested_target": target_term,
+                "source": "glossary",
+                "context": context or source_text,
+                "approved": True,
+            })
+        return matches
+
+    def build_review_candidates(self, batch_rows: list, target_language: str) -> list[dict]:
+        """Collects exact glossary hits and prepares them for approval/editing before translation."""
+        review_map = {}
+
+        for row in batch_rows:
+            source_text = str(getattr(row, "source_text", "")).strip()
+            if not source_text:
+                continue
+            context = str(getattr(row, "context", "") or "")
+            row_id = getattr(row, "row_id", None)
+            for candidate in self.get_exact_term_candidates(source_text, context=context, row_id=row_id):
+                key = candidate["source_term"].strip().lower()
+                if key not in review_map:
+                    review_map[key] = {
+                        **candidate,
+                        "source_language": "Chinese",
+                        "target_language": target_language,
+                    }
+
+        return list(review_map.values())
+
     def get_batch_context(self, batch_rows: list, target_language: str) -> str:
         """Assembles the final context block (Profile + Terms + TM) for the LLM Prompt."""
         texts = [str(getattr(r, "source_text", "")).strip() for r in batch_rows if str(getattr(r, "source_text", "")).strip()]
