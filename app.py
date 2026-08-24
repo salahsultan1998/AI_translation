@@ -947,7 +947,6 @@ with st.sidebar:
         "Baloot_Challenges",
         "Direct_translation",
         "sawa",
-        "+ Add New Project",
     ]
 
     selected_project = st.selectbox(
