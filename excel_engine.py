@@ -185,18 +185,20 @@ class ExcelHandler:
         return batches, alias_map
 
     @staticmethod
-    def write_translated_sheet(
+    def write_translated_workbook(
         original_file: str,
-        translations: Dict[int, str],
+        sheet_translations: Dict[str, Dict[int, str]],  # { "Sheet1": {0: "Trans", ...}, "Sheet2": {...} }
         target_column: str,
-        output_file: str,
-        sheet_name: Optional[str] = None
+        output_file: str
     ):
-        """Maps translations back to row_id and exports the localized file, preserving all sheets AND formatting."""
+        """Maps translations back to multiple sheets, preserving all formatting."""
         ext = os.path.splitext(output_file)[1].lower()
         
         if ext == ".csv":
-            # CSVs have no formatting, so we just use pandas
+            # CSVs only have one sheet, we just take the first one available
+            sheet_name = list(sheet_translations.keys())[0]
+            translations = sheet_translations[sheet_name]
+            
             df = ExcelHandler._read_file(original_file)
             translated_list = []
             for idx in range(len(df)):
@@ -205,36 +207,34 @@ class ExcelHandler:
             df.to_csv(output_file, index=False)
             
         else:
-            # For Excel: Copy the original file to preserve everything!
+            # Excel: Copy original file to preserve structure and formatting
             shutil.copy2(original_file, output_file)
-            
-            # Figure out exactly which sheet we are modifying and how many rows there are
-            with pd.ExcelFile(original_file) as xl:
-                target_sheet = sheet_name if sheet_name else xl.sheet_names[0]
-                df = pd.read_excel(xl, sheet_name=target_sheet)
-            
-            # Open the copied workbook using openpyxl (this preserves ALL formatting)
             wb = openpyxl.load_workbook(output_file)
-            ws = wb[target_sheet]
             
-            # Look for the target column in the first row (headers)
-            target_col_idx = None
-            for cell in ws[1]:
-                if cell.value == target_column:
-                    target_col_idx = cell.column
-                    break
+            with pd.ExcelFile(original_file) as xl:
+                # Loop through every sheet we have translations for
+                for sheet_name, translations in sheet_translations.items():
+                    if sheet_name not in wb.sheetnames:
+                        continue
+                        
+                    df = pd.read_excel(xl, sheet_name=sheet_name)
+                    ws = wb[sheet_name]
                     
-            # If the column doesn't exist, create it at the end
-            if target_col_idx is None:
-                target_col_idx = ws.max_column + 1
-                ws.cell(row=1, column=target_col_idx, value=target_column)
+                    # Find or create the target column
+                    target_col_idx = None
+                    for cell in ws[1]:
+                        if cell.value == target_column:
+                            target_col_idx = cell.column
+                            break
+                            
+                    if target_col_idx is None:
+                        target_col_idx = ws.max_column + 1
+                        ws.cell(row=1, column=target_col_idx, value=target_column)
+                    
+                    # Write translations
+                    for idx in range(len(df)):
+                        translated_text = translations.get(idx, "")
+                        ws.cell(row=idx + 2, column=target_col_idx, value=translated_text)
             
-            # Write the translations cell by cell to preserve surrounding formats
-            # Note: Pandas df index 0 is Excel row 2 (because row 1 is headers)
-            for idx in range(len(df)):
-                translated_text = translations.get(idx, "")
-                ws.cell(row=idx + 2, column=target_col_idx, value=translated_text)
-                
-            # Save and close the nicely formatted file!
             wb.save(output_file)
             wb.close()

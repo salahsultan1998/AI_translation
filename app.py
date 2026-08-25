@@ -1080,38 +1080,20 @@ tab1, tab2 = st.tabs([
 # TAB 1 — LOCALIZATION WORKSPACE
 # ============================================================
 
-# ============================================================
-# TAB 1 — LOCALIZATION WORKSPACE
-# ============================================================
-
 with tab1:
 
-    # ── Step 1: Configuration (Moved from Sidebar) ────────────
+    # ── Step 1: Configuration ────────────
     with st.expander("⚙️ Advanced Settings (AI Model & Batching)"):
         cfg_col1, cfg_col2 = st.columns(2)
 
         with cfg_col1:
             model_options = [
-                # "qwen/qwen3-235b-a22b-2507",
-                # "qwen/qwen3.7-plus",
-                # "google/gemini-3.1-flash-lite",
                 "google/gemini-3.7-flash"
             ]
-            model_choice = st.selectbox(
-                "AI Model",
-                options=model_options,
-                index=0,
-                help="Select the AI model used for translation.",
-            )
+            model_choice = st.selectbox("AI Model", options=model_options, index=0)
 
         with cfg_col2:
-            batch_mode = st.radio(
-                "Batching Strategy",
-                options=["Auto", "Manual"],
-                horizontal=True,
-                help="Auto uses a smart character budget to handle mixed long/short text safely.",
-            )
-
+            batch_mode = st.radio("Batching Strategy", options=["Auto", "Manual"], horizontal=True)
             if batch_mode == "Manual":
                 manual_batch_size = st.slider("Rows per batch", 1, 50, 10, 1)
             else:
@@ -1123,253 +1105,143 @@ with tab1:
         <div class="sec-header-icon">{icon("upload", 14, "#6366f1")}</div>
         <div class="sec-title">Provide game text</div>
     </div>
-    <div class="sec-desc">
-        Upload a file (<strong>.xlsx</strong> / <strong>.csv</strong>) or manually enter text to translate into <strong>{html.escape(target_language)}</strong> for <strong>{html.escape(game_id)}</strong>.
-    </div>
     """)
 
-    input_mode = st.radio(
-        "Input Mode",
-        options=["File Upload", "Manual Entry"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
+    input_mode = st.radio("Input Mode", options=["File Upload", "Manual Entry"], horizontal=True, label_visibility="collapsed")
 
     is_data_ready = False
     df_preview = None
+    preview_dfs = {}
     uploaded_file_name = None
     file_bytes_buffer = None
     is_csv = False
+    selected_sheets_trans = []
 
     if input_mode == "File Upload":
-        # Empty State Helper
         if "game_text_uploader" not in st.session_state or not st.session_state.game_text_uploader:
             render_html("""
             <div style="background: var(--surface-2); padding: 16px 20px; border-radius: var(--r-md); border: 1px dashed var(--border); margin-bottom: 16px;">
                 <div style="font-size: 0.85rem; color: var(--text-color); opacity: 0.8;">
-                    <strong>💡 Pro Tip:</strong> Before uploading, ensure your file has clear headers. The app will let you select which column contains the source text.
+                    <strong>💡 Pro Tip:</strong> Ensure your sheets share the same column names if selecting multiple.
                 </div>
             </div>
             """)
 
-        uploaded_file = st.file_uploader(
-            "Drop your file here or click to browse",
-            type=["xlsx", "csv"],
-            key="game_text_uploader",
-            label_visibility="collapsed",
-        )
+        uploaded_file = st.file_uploader("Drop your file here", type=["xlsx", "csv"], key="game_text_uploader", label_visibility="collapsed")
 
         if uploaded_file is not None:
-            # Clear old translation state when a NEW file is uploaded
             if st.session_state.get("last_uploaded_file_id") != uploaded_file.file_id:
                 st.session_state.last_uploaded_file_id = uploaded_file.file_id
                 st.session_state.translation_complete = False
                 st.session_state.pop("final_download_bytes", None)
-                st.session_state.pop("final_elapsed_time", None)
 
             is_csv = uploaded_file.name.lower().endswith(".csv")
-            selected_sheet_trans = None
             
             if is_csv:
+                selected_sheets_trans = ["CSV_Sheet"]
                 df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
+                preview_dfs["CSV_Sheet"] = df_preview
             else:
                 try:
                     excel_obj = pd.ExcelFile(uploaded_file)
                     sheet_names = excel_obj.sheet_names
-                    selected_sheet_trans = st.selectbox(
-                        "Select sheet to translate",
+                    
+                    selected_sheets_trans = st.multiselect(
+                        "Select sheets to translate (Columns mapped below will apply to ALL selected sheets)",
                         options=sheet_names,
+                        default=[sheet_names[0]],
                         key="trans_sheet_select"
                     )
-                    df_preview = pd.read_excel(
-                        excel_obj, sheet_name=selected_sheet_trans
-                    ).fillna("").astype(str)
+                    
+                    if selected_sheets_trans:
+                        # Load all selected sheets into a dictionary for tabbed preview
+                        for s in selected_sheets_trans:
+                            preview_dfs[s] = pd.read_excel(excel_obj, sheet_name=s).fillna("").astype(str)
+                        # Keep a reference for column selection mapping
+                        df_preview = preview_dfs[selected_sheets_trans[0]]
                 except Exception as e:
                     st.error(f"Error reading Excel: {e}")
                     
-            # Save the sheet name to session state so the Start button can use it
-            st.session_state.selected_sheet_trans = selected_sheet_trans
-
+            st.session_state.selected_sheets_trans = selected_sheets_trans
             uploaded_file.seek(0)
             file_bytes_buffer = uploaded_file.getbuffer()
             uploaded_file_name = uploaded_file.name
-            is_data_ready = True
+            is_data_ready = bool(selected_sheets_trans)
 
     else:
-        # Manual Entry State
+        # Manual Entry
         if "manual_trans_df" not in st.session_state:
-            st.session_state.manual_trans_df = pd.DataFrame(
-                {"Source Text": [""], "Context": [""]}
-            )
+            st.session_state.manual_trans_df = pd.DataFrame({"Source Text": [""], "Context": [""]})
 
-        st.caption("Paste or type your text directly below. Add new rows as needed.")
-        edited_df = st.data_editor(
-            st.session_state.manual_trans_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "Source Text": st.column_config.TextColumn("Source text (required)", required=True),
-                "Context": st.column_config.TextColumn("Context / type (optional)")
-            }
-        )
-
-        # Check if user has actually entered text
+        edited_df = st.data_editor(st.session_state.manual_trans_df, num_rows="dynamic", use_container_width=True)
         valid_rows = edited_df[edited_df["Source Text"].str.strip() != ""]
+        
         if not valid_rows.empty:
             df_preview = edited_df.copy()
-            # Convert to CSV in memory so the pipeline handles it like a file upload
             csv_buffer = io.BytesIO()
             df_preview.to_csv(csv_buffer, index=False)
             file_bytes_buffer = csv_buffer.getvalue()
             uploaded_file_name = "manual_input.csv"
             is_csv = True
             is_data_ready = True
-
-            # Clear old state if the manual text is edited
-            current_hash = hash(file_bytes_buffer)
-            if st.session_state.get("last_manual_hash") != current_hash:
-                st.session_state.last_manual_hash = current_hash
-                st.session_state.translation_complete = False
-                st.session_state.pop("final_download_bytes", None)
-                st.session_state.pop("final_elapsed_time", None)
+            selected_sheets_trans = ["Manual_Sheet"]
+            preview_dfs["Manual_Sheet"] = df_preview
+            st.session_state.selected_sheets_trans = selected_sheets_trans
 
     # ── Step 3 & 4: Preview & Mapping ───────────────────────────────────
     if is_data_ready and df_preview is not None:
-        safe_file_name = html.escape(uploaded_file_name)
-
         if len(df_preview.columns) == 0:
             st.error("The provided data has no columns.")
         else:
             if input_mode == "File Upload":
-                # Only show file preview and mapping if a file was uploaded 
-                # (Manual entry already shows the grid)
-                render_html(f"""
-                <div class="sec-header" style="margin-top:20px;">
-                    <div class="sec-header-icon">{icon("file", 14, "#6366f1")}</div>
-                    <div class="sec-title">File preview</div>
-                </div>
-                <div class="preview-wrap">
-                    <div class="preview-bar">
-                        <div class="preview-bar-title">
-                            {icon("file", 14, "currentColor")}
-                            {safe_file_name}
-                        </div>
-                        <div class="preview-bar-count">{len(df_preview):,} rows</div>
+                if not is_csv and selected_sheets_trans:
+                    render_html(f"""
+                    <div class="sec-header" style="margin-top:20px;">
+                        <div class="sec-header-icon">{icon("file", 14, "#6366f1")}</div>
+                        <div class="sec-title">Preview selected sheets ({len(selected_sheets_trans)})</div>
                     </div>
-                </div>
-                """)
-                st.dataframe(df_preview, use_container_width=True, height=260)
-
-                render_html(f"""
-                <div class="sec-header" style="margin-top:20px;">
-                    <div class="sec-header-icon">{icon("columns", 14, "#6366f1")}</div>
-                    <div class="sec-title">Map data columns</div>
-                </div>
-                <div class="sec-desc">
-                    Select which column contains the source text to translate,
-                    and optionally a context/type column to improve AI accuracy.
-                </div>
-                """)
+                    """)
+                    # Render native tabs for each selected sheet preview
+                    preview_tabs = st.tabs(selected_sheets_trans)
+                    for i, s_name in enumerate(selected_sheets_trans):
+                        with preview_tabs[i]:
+                            st.dataframe(preview_dfs[s_name], use_container_width=True, height=200)
+                else:
+                    st.dataframe(df_preview, use_container_width=True, height=200)
 
                 col_sel1, col_sel2, col_sel3 = st.columns(3)
                 with col_sel1:
-                    selected_source_col = st.selectbox(
-                        "Source text column (required)",
-                        options=df_preview.columns,
-                        index=0,
-                    )
+                    selected_source_col = st.selectbox("Source text column", options=df_preview.columns, index=0)
                 with col_sel2:
                     ctx_options = ["— No context column —"] + list(df_preview.columns)
-                    default_ctx_idx = 0
-                    for i, col in enumerate(df_preview.columns):
-                        if col.lower() in ["text_type", "context", "type", "description"]:
-                            default_ctx_idx = i + 1
-                            break
-                    selected_context_col = st.selectbox(
-                        "Context / type column (optional)",
-                        options=ctx_options,
-                        index=default_ctx_idx,
-                    )
+                    selected_context_col = st.selectbox("Context column", options=ctx_options, index=0)
                 with col_sel3:
                     tgt_options = ["— Create new column —"] + list(df_preview.columns)
-                    target_col_selection = st.selectbox(
-                        "Target column",
-                        options=tgt_options,
-                        index=0,
-                    )
+                    target_col_selection = st.selectbox("Target column", options=tgt_options, index=0)
 
-                actual_context_col = (
-                    None if selected_context_col == "— No context column —"
-                    else selected_context_col
-                )
-
-                # If user wants to create a new column, show a text input
-                if target_col_selection == "— Create new column —":
-                    final_target_col_name = st.text_input("New target column name", value=target_language)
-                else:
-                    final_target_col_name = target_col_selection
-                    
-                # Save the final target column name to session state for the translator
+                actual_context_col = None if selected_context_col == "— No context column —" else selected_context_col
+                final_target_col_name = st.text_input("New target column name", value=target_language) if target_col_selection == "— Create new column —" else target_col_selection
+                
                 st.session_state.final_target_col_name = final_target_col_name
             else:
-                # Auto-map for Manual Entry
                 selected_source_col = "Source Text"
-                # Only use context if the user actually typed something in the context column
-                has_context = "Context" in df_preview.columns and not df_preview["Context"].eq("").all()
-                actual_context_col = "Context" if has_context else None
+                actual_context_col = "Context" if "Context" in df_preview.columns else None
                 st.session_state.final_target_col_name = target_language
-                st.session_state.selected_sheet_trans = None
 
-            if "translation_complete" not in st.session_state:
-                st.session_state.translation_complete = False
+            use_smart_budget = (batch_mode == "Auto")
 
-            # Batch config strings for display
-            if batch_mode == "Auto":
-                use_smart_budget = True
-                display_desc = "Dynamic character budget · ~1000 chars / batch"
-            else:
-                use_smart_budget = False
-                display_desc = f"{manual_batch_size} rows per API request"
-            
-            # ── Step 4.5: Custom Instructions ──────────────────
+            # Custom Instructions
             render_html(f"""
             <div class="sec-header" style="margin-top:20px;">
                 <div class="sec-header-icon">{icon("cpu", 14, "#6366f1")}</div>
                 <div class="sec-title">Custom AI Instructions (Optional)</div>
             </div>
-            <div class="sec-desc">
-                Add specific rules for this translation run (e.g., "Keep character names in English", "Use a casual tone"). 
-                Leave empty to use the default Game Profile.
-            </div>
             """)
-
-            custom_instructions_input = st.text_area(
-                "Custom AI Instructions",
-                placeholder="Type your on-the-fly instructions here...",
-                label_visibility="collapsed",
-                height=100
-            )
+            custom_instructions_input = st.text_area("Custom AI Instructions", placeholder="Type rules here...", label_visibility="collapsed", height=100)
 
             # ── Step 5: Start ──────────────────────────
-            render_html(f"""
-            <div class="sec-header" style="margin-top:20px;">
-                <div class="sec-header-icon">{icon("play", 14, "#6366f1")}</div>
-                <div class="sec-title">Run translation</div>
-            </div>
-            """)
-
-            render_html(f"""
-            <div class="batch-strip" style="margin-bottom:14px;">
-                <div class="batch-strip-label">Batch mode: {html.escape(batch_mode)}</div>
-                <div class="batch-strip-value">{html.escape(display_desc)}</div>
-            </div>
-            """)
-
-            start_clicked = st.button(
-                "▶  Start Translation",
-                type="primary",
-                use_container_width=True,
-            )
+            st.divider()
+            start_clicked = st.button("▶  Start Multi-Sheet Translation", type="primary", use_container_width=True)
 
             # ── Step 6: Translation Engine + Progress ───────
             if start_clicked:
@@ -1382,74 +1254,53 @@ with tab1:
                     with open(temp_input_path, "wb") as f:
                         f.write(file_bytes_buffer)
 
+                    rag = RAGEngine()
                     try:
-                        glossary_dict = fetch_terms(db, game_id, target_language)
-                        tm_dict = fetch_tm(db, game_id, target_language)
-                        game_profile = fetch_game_profile(db, game_id)
-
-                        rag = RAGEngine()
                         rag.load_resources(
-                            glossary_dict=glossary_dict,
-                            tm_dict=tm_dict,
-                            game_profile=game_profile,
+                            glossary_dict=fetch_terms(db, game_id, target_language),
+                            tm_dict=fetch_tm(db, game_id, target_language),
+                            game_profile=fetch_game_profile(db, game_id),
                         )
                     except Exception as e:
-                        st.error(f"Failed to fetch database context: {e}")
+                        st.error("Context fetch failed.")
                         st.stop()
 
-                    rows = ExcelHandler.read_game_sheet(
-                        temp_input_path,
-                        text_column=selected_source_col,
-                        context_column=actual_context_col,
-                        sheet_name=st.session_state.get("selected_sheet_trans")
-                    )
+                    all_batches = []
+                    final_sheet_results = {s: {} for s in selected_sheets_trans}
+                    
+                    # 1. READ ALL SHEETS AND PREPARE BATCHES
+                    for sheet_name in selected_sheets_trans:
+                        read_sheet_arg = sheet_name if not is_csv else None 
+                        try:
+                            rows = ExcelHandler.read_game_sheet(
+                                temp_input_path,
+                                text_column=selected_source_col,
+                                context_column=actual_context_col,
+                                sheet_name=read_sheet_arg
+                            )
+                            batches, alias_map = ExcelHandler.prepare_batches(rows, batch_size=manual_batch_size, use_smart_budget=use_smart_budget)
+                            
+                            for b in batches:
+                                all_batches.append({"sheet": sheet_name, "rows": b, "alias": alias_map, "original_rows": rows})
+                        except Exception as e:
+                            st.error(f"Could not read column '{selected_source_col}' in sheet '{sheet_name}'. Skipping.")
 
-                    # Dedupe identical rows and group near-duplicates (same text,
-                    # different embedded number) so they translate once / together
-                    # instead of scattering across separate batches.
-                    batches, alias_map = ExcelHandler.prepare_batches(
-                        rows,
-                        batch_size=manual_batch_size,
-                        use_smart_budget=use_smart_budget,
-                    )
-
-                    total_batches = len(batches)
-                    translations_dict = {}
-
-                    # Progress UI
-                    render_html(f"""
-                    <div class="progress-card">
-                        <div class="progress-header">
-                            <div class="progress-title">
-                                <span class="progress-spinner"></span>
-                                Processing — {html.escape(target_language)} translation
-                            </div>
-                        </div>
-                    </div>
-                    """)
+                    total_batches = len(all_batches)
 
                     progress_bar = st.progress(0.0)
-                    ui_col1, ui_col2, ui_col3 = st.columns(3)
+                    ui_col1, ui_col2 = st.columns(2)
                     metric_progress = ui_col1.empty()
                     metric_time = ui_col2.empty()
-                    metric_status = ui_col3.empty()
 
                     start_time = time.time()
+                    completed_batches = 0
 
-                    def _translate_one_batch(batch_idx, batch_rows):
-                        rag_context = rag.get_batch_context(
-                            batch_rows=batch_rows,
-                            target_language=target_language,
-                        )
-
-                        batch_request = BatchTranslationRequest(
-                            batch_id=batch_idx + 1,
-                            rows=batch_rows,
-                            target_language=target_language,
-                        )
-
-                        response = translator_agent(
-                            batch_request=batch_request,
+                    def _translate_batch_dict(batch_dict, b_idx):
+                        rag_context = rag.get_batch_context(batch_rows=batch_dict["rows"], target_language=target_language)
+                        batch_req = BatchTranslationRequest(batch_id=b_idx, rows=batch_dict["rows"], target_language=target_language)
+                        
+                        resp = translator_agent(
+                            batch_request=batch_req,
                             rag_context=rag_context,
                             feedback="",
                             model_name=model_choice,
@@ -1457,80 +1308,53 @@ with tab1:
                             game_id=game_id,
                             custom_instructions=custom_instructions_input,
                         )
+                        return batch_dict["sheet"], batch_dict["rows"], batch_dict["alias"], batch_dict["original_rows"], resp
 
-                        reviewer_agent(
-                            original_rows=batch_rows,
-                            translated_batch=response,
-                        )
-
-                        return response
-
-                    completed_batches = 0
-
+                    # 2. RUN PARALLEL TRANSLATION
                     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_BATCHES) as executor:
-                        future_to_batch = {
-                            executor.submit(_translate_one_batch, idx, batch_rows): (idx, batch_rows)
-                            for idx, batch_rows in enumerate(batches)
-                        }
+                        future_to_b = {executor.submit(_translate_batch_dict, b, idx): b for idx, b in enumerate(all_batches)}
 
-                        for future in as_completed(future_to_batch):
-                            current_idx, batch_rows = future_to_batch[future]
-
+                        for future in as_completed(future_to_b):
                             try:
-                                response = future.result()
+                                sheet, b_rows, alias_map, orig_rows, response = future.result()
+                                
+                                current_sheet_dict = final_sheet_results[sheet]
                                 for item in (response.translations or []):
-                                    translations_dict[item.row_id] = item.translated_text
-                            except Exception as e:
-                                st.toast(f"Batch {current_idx + 1} error: {e}", icon="⚠️")
+                                    current_sheet_dict[item.row_id] = item.translated_text
+                                    
+                                for r in b_rows:
+                                    if r.row_id not in current_sheet_dict:
+                                        current_sheet_dict[r.row_id] = r.source_text
+                                        
+                                row_lookup = {r.row_id: r for r in orig_rows}
+                                for dup_id, rep_id in alias_map.items():
+                                    current_sheet_dict[dup_id] = current_sheet_dict.get(rep_id, row_lookup[dup_id].source_text)
 
-                            for r in batch_rows:
-                                if r.row_id not in translations_dict:
-                                    translations_dict[r.row_id] = r.source_text
+                            except Exception as e:
+                                st.toast(f"Batch error: {e}")
 
                             completed_batches += 1
-                            elapsed = time.time() - start_time
-                            mins, secs = divmod(int(elapsed), 60)
-
+                            elapsed = int(time.time() - start_time)
                             progress_bar.progress(completed_batches / max(1, total_batches))
-                            metric_progress.metric(
-                                "Batch", f"{completed_batches} / {total_batches}"
-                            )
-                            metric_time.metric("Elapsed", f"{mins:02d}:{secs:02d}")
-                            metric_status.metric("Status", "Translating")
+                            metric_progress.metric("Batches done", f"{completed_batches} / {total_batches}")
+                            metric_time.metric("Time", f"{elapsed//60:02d}:{elapsed%60:02d}")
 
-                    # Fill in rows that were skipped as exact/near duplicates
-                    # by reusing their representative row's translation.
-                    row_lookup = {r.row_id: r for r in rows}
-                    for dup_row_id, rep_row_id in alias_map.items():
-                        translations_dict[dup_row_id] = translations_dict.get(
-                            rep_row_id, row_lookup[dup_row_id].source_text
-                        )
-
-                    progress_bar.progress(1.0)
-                    metric_status.metric("Status", "Complete ✓")
-
-                    ExcelHandler.write_translated_sheet(
+                    # 3. WRITE ALL SHEETS BACK
+                    ExcelHandler.write_translated_workbook(
                         original_file=temp_input_path,
-                        translations=translations_dict,
+                        sheet_translations=final_sheet_results,
                         target_column=st.session_state.get("final_target_col_name", target_language),
-                        output_file=temp_output_path,
-                        sheet_name=st.session_state.get("selected_sheet_trans")
+                        output_file=temp_output_path
                     )
 
                     with open(temp_output_path, "rb") as f:
                         st.session_state.final_download_bytes = f.read()
-
-                    st.session_state.final_elapsed_time = time.time() - start_time
+                    
                     st.session_state.translation_complete = True
-
                 st.rerun()
 
             # ── Step 7: Result + Download ───────────────────
             if st.session_state.get("translation_complete") and "final_download_bytes" in st.session_state:
-
-                mins, secs = divmod(int(st.session_state.final_elapsed_time), 60)
-                row_count = len(df_preview)
-
                 render_html(f"""
                 <div class="result-card" style="background: var(--success-soft); border: 1px solid var(--success-soft); border-radius: var(--r-lg); padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 16px 0 10px 0;">
                     <div class="result-left" style="display: flex; align-items: center; gap: 12px;">
@@ -1538,9 +1362,9 @@ with tab1:
                             {icon("check-circle", 20, "#22c55e")}
                         </div>
                         <div>
-                            <div class="result-title" style="font-size: 0.95rem; font-weight: 700; color: var(--success-text);">Translation complete</div>
+                            <div class="result-title" style="font-size: 0.95rem; font-weight: 700; color: var(--success-text);">Multi-sheet translation complete</div>
                             <div class="result-sub" style="font-size: 0.85rem; color: var(--text-color); opacity: 0.7; margin-top: 3px;">
-                                {row_count:,} rows · {mins}m {secs}s · {html.escape(target_language)} output ready
+                                {len(st.session_state.get("selected_sheets_trans", []))} sheet(s) successfully processed
                             </div>
                         </div>
                     </div>
@@ -1550,7 +1374,7 @@ with tab1:
                 render_html(f"""
                 <div class="sec-header">
                     <div class="sec-header-icon">{icon("file", 14, "#22c55e")}</div>
-                    <div class="sec-title">Output preview</div>
+                    <div class="sec-title">Output preview (All workbook sheets)</div>
                 </div>
                 """)
 
@@ -1559,30 +1383,31 @@ with tab1:
                 try:
                     if is_csv:
                         translated_df = pd.read_csv(io.BytesIO(file_bytes)).fillna("").astype(str)
+                        st.dataframe(translated_df, use_container_width=True, height=280)
                     else:
-                        translated_df = pd.read_excel(io.BytesIO(file_bytes)).fillna("").astype(str)
-                    st.dataframe(translated_df, use_container_width=True, height=280)
+                        out_excel = pd.ExcelFile(io.BytesIO(file_bytes))
+                        out_sheet_names = out_excel.sheet_names
+                        
+                        out_tabs = st.tabs(out_sheet_names)
+                        for i, s_name in enumerate(out_sheet_names):
+                            with out_tabs[i]:
+                                out_df = pd.read_excel(out_excel, sheet_name=s_name).fillna("").astype(str)
+                                st.dataframe(out_df, use_container_width=True, height=280)
                 except Exception as e:
                     st.error(f"Could not load preview: {e}")
 
-                # Generate new filename: [Original Name]_translated.[ext]
                 base_name, ext = os.path.splitext(uploaded_file_name)
                 new_file_name = f"{base_name}_translated{ext}"
-
-                mime_type = (
-                    "text/csv" if is_csv
-                    else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                mime = "text/csv" if is_csv else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
                 st.download_button(
-                    label=f" 📥 Download {html.escape(target_language)} file",
+                    label=f" 📥 Download translated file",
                     data=st.session_state.final_download_bytes,
                     file_name=new_file_name,
-                    mime=mime_type,
+                    mime=mime,
                     type="primary",
                     use_container_width=True,
                 )
-
 # ============================================================
 # TAB 2 — DATABASE & CONTEXT
 # ============================================================
