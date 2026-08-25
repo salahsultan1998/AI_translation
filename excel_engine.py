@@ -1,6 +1,8 @@
 import os
 import re
+import shutil
 import pandas as pd
+import openpyxl
 from typing import List, Dict, Optional, Tuple
 from custom_types import RowItem
 
@@ -11,21 +13,27 @@ _NUMBER_PATTERN = re.compile(r"\d+")
 
 class ExcelHandler:
     @staticmethod
-    def _read_file(file_path: str) -> pd.DataFrame:
+    def _read_file(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
         """Helper to safely read both CSV and Excel files."""
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".csv":
             return pd.read_csv(file_path)
+        
+        # If sheet_name is provided, read that specific sheet. Otherwise, read the default (first) sheet.
+        if sheet_name:
+            return pd.read_excel(file_path, sheet_name=sheet_name)
         return pd.read_excel(file_path)
 
     @staticmethod
     def read_game_sheet(
         file_path: str,
         text_column: str = "text",
-        context_column: Optional[str] = "text_type"
+        context_column: Optional[str] = "text_type",
+        sheet_name: Optional[str] = None
     ) -> List[RowItem]:
         """Reads game text files (.xlsx or .csv) using specified column mappings and normalizes full-width characters."""
-        df = ExcelHandler._read_file(file_path)
+        # Pass the sheet_name to the reader
+        df = ExcelHandler._read_file(file_path, sheet_name=sheet_name)
         records: List[RowItem] = []
 
         for index, row in df.iterrows():
@@ -181,22 +189,52 @@ class ExcelHandler:
         original_file: str,
         translations: Dict[int, str],
         target_column: str,
-        output_file: str
+        output_file: str,
+        sheet_name: Optional[str] = None
     ):
-        """Maps translations back to row_id and exports the localized file."""
-        df = ExcelHandler._read_file(original_file)
-
-        # Map translated strings using explicit index position to guarantee row alignment
-        translated_list = []
-        for idx in range(len(df)):
-            # app.py already guarantees that ALL row ids are in the translations dict.
-            # We use .get(idx, "") as a safe fallback just in case, removing the hardcoded "text" dependency.
-            translated_list.append(translations.get(idx, ""))
-
-        df[target_column] = translated_list
-
+        """Maps translations back to row_id and exports the localized file, preserving all sheets AND formatting."""
         ext = os.path.splitext(output_file)[1].lower()
+        
         if ext == ".csv":
+            # CSVs have no formatting, so we just use pandas
+            df = ExcelHandler._read_file(original_file)
+            translated_list = []
+            for idx in range(len(df)):
+                translated_list.append(translations.get(idx, ""))
+            df[target_column] = translated_list
             df.to_csv(output_file, index=False)
+            
         else:
-            df.to_excel(output_file, index=False)
+            # For Excel: Copy the original file to preserve everything!
+            shutil.copy2(original_file, output_file)
+            
+            # Figure out exactly which sheet we are modifying and how many rows there are
+            with pd.ExcelFile(original_file) as xl:
+                target_sheet = sheet_name if sheet_name else xl.sheet_names[0]
+                df = pd.read_excel(xl, sheet_name=target_sheet)
+            
+            # Open the copied workbook using openpyxl (this preserves ALL formatting)
+            wb = openpyxl.load_workbook(output_file)
+            ws = wb[target_sheet]
+            
+            # Look for the target column in the first row (headers)
+            target_col_idx = None
+            for cell in ws[1]:
+                if cell.value == target_column:
+                    target_col_idx = cell.column
+                    break
+                    
+            # If the column doesn't exist, create it at the end
+            if target_col_idx is None:
+                target_col_idx = ws.max_column + 1
+                ws.cell(row=1, column=target_col_idx, value=target_column)
+            
+            # Write the translations cell by cell to preserve surrounding formats
+            # Note: Pandas df index 0 is Excel row 2 (because row 1 is headers)
+            for idx in range(len(df)):
+                translated_text = translations.get(idx, "")
+                ws.cell(row=idx + 2, column=target_col_idx, value=translated_text)
+                
+            # Save and close the nicely formatted file!
+            wb.save(output_file)
+            wb.close()

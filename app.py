@@ -947,6 +947,7 @@ with st.sidebar:
         "Baloot_Challenges",
         "Direct_translation",
         "sawa",
+        "S06"
     ]
 
     selected_project = st.selectbox(
@@ -1079,12 +1080,16 @@ tab1, tab2 = st.tabs([
 # TAB 1 — LOCALIZATION WORKSPACE
 # ============================================================
 
+# ============================================================
+# TAB 1 — LOCALIZATION WORKSPACE
+# ============================================================
+
 with tab1:
 
     # ── Step 1: Configuration (Moved from Sidebar) ────────────
     with st.expander("⚙️ Advanced Settings (AI Model & Batching)"):
         cfg_col1, cfg_col2 = st.columns(2)
-        
+
         with cfg_col1:
             model_options = [
                 # "qwen/qwen3-235b-a22b-2507",
@@ -1095,7 +1100,7 @@ with tab1:
             model_choice = st.selectbox(
                 "AI Model",
                 options=model_options,
-                index=1,
+                index=0,
                 help="Select the AI model used for translation.",
             )
 
@@ -1106,7 +1111,7 @@ with tab1:
                 horizontal=True,
                 help="Auto uses a smart character budget to handle mixed long/short text safely.",
             )
-            
+
             if batch_mode == "Manual":
                 manual_batch_size = st.slider("Rows per batch", 1, 50, 10, 1)
             else:
@@ -1163,11 +1168,28 @@ with tab1:
                 st.session_state.pop("final_elapsed_time", None)
 
             is_csv = uploaded_file.name.lower().endswith(".csv")
+            selected_sheet_trans = None
+            
             if is_csv:
                 df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
             else:
-                df_preview = pd.read_excel(uploaded_file).fillna("").astype(str)
-            
+                try:
+                    excel_obj = pd.ExcelFile(uploaded_file)
+                    sheet_names = excel_obj.sheet_names
+                    selected_sheet_trans = st.selectbox(
+                        "Select sheet to translate",
+                        options=sheet_names,
+                        key="trans_sheet_select"
+                    )
+                    df_preview = pd.read_excel(
+                        excel_obj, sheet_name=selected_sheet_trans
+                    ).fillna("").astype(str)
+                except Exception as e:
+                    st.error(f"Error reading Excel: {e}")
+                    
+            # Save the sheet name to session state so the Start button can use it
+            st.session_state.selected_sheet_trans = selected_sheet_trans
+
             uploaded_file.seek(0)
             file_bytes_buffer = uploaded_file.getbuffer()
             uploaded_file_name = uploaded_file.name
@@ -1179,7 +1201,7 @@ with tab1:
             st.session_state.manual_trans_df = pd.DataFrame(
                 {"Source Text": [""], "Context": [""]}
             )
-        
+
         st.caption("Paste or type your text directly below. Add new rows as needed.")
         edited_df = st.data_editor(
             st.session_state.manual_trans_df,
@@ -1249,7 +1271,7 @@ with tab1:
                 </div>
                 """)
 
-                col_sel1, col_sel2 = st.columns(2)
+                col_sel1, col_sel2, col_sel3 = st.columns(3)
                 with col_sel1:
                     selected_source_col = st.selectbox(
                         "Source text column (required)",
@@ -1268,17 +1290,35 @@ with tab1:
                         options=ctx_options,
                         index=default_ctx_idx,
                     )
-                
+                with col_sel3:
+                    tgt_options = ["— Create new column —"] + list(df_preview.columns)
+                    target_col_selection = st.selectbox(
+                        "Target column",
+                        options=tgt_options,
+                        index=0,
+                    )
+
                 actual_context_col = (
                     None if selected_context_col == "— No context column —"
                     else selected_context_col
                 )
+
+                # If user wants to create a new column, show a text input
+                if target_col_selection == "— Create new column —":
+                    final_target_col_name = st.text_input("New target column name", value=target_language)
+                else:
+                    final_target_col_name = target_col_selection
+                    
+                # Save the final target column name to session state for the translator
+                st.session_state.final_target_col_name = final_target_col_name
             else:
                 # Auto-map for Manual Entry
                 selected_source_col = "Source Text"
                 # Only use context if the user actually typed something in the context column
                 has_context = "Context" in df_preview.columns and not df_preview["Context"].eq("").all()
                 actual_context_col = "Context" if has_context else None
+                st.session_state.final_target_col_name = target_language
+                st.session_state.selected_sheet_trans = None
 
             if "translation_complete" not in st.session_state:
                 st.session_state.translation_complete = False
@@ -1290,6 +1330,7 @@ with tab1:
             else:
                 use_smart_budget = False
                 display_desc = f"{manual_batch_size} rows per API request"
+            
             # ── Step 4.5: Custom Instructions ──────────────────
             render_html(f"""
             <div class="sec-header" style="margin-top:20px;">
@@ -1360,6 +1401,7 @@ with tab1:
                         temp_input_path,
                         text_column=selected_source_col,
                         context_column=actual_context_col,
+                        sheet_name=st.session_state.get("selected_sheet_trans")
                     )
 
                     # Dedupe identical rows and group near-duplicates (same text,
@@ -1467,13 +1509,12 @@ with tab1:
                     progress_bar.progress(1.0)
                     metric_status.metric("Status", "Complete ✓")
 
-                    target_col_name = f"{target_language.strip().replace(' ', '_')}"
-
                     ExcelHandler.write_translated_sheet(
                         original_file=temp_input_path,
                         translations=translations_dict,
-                        target_column=target_col_name,
+                        target_column=st.session_state.get("final_target_col_name", target_language),
                         output_file=temp_output_path,
+                        sheet_name=st.session_state.get("selected_sheet_trans")
                     )
 
                     with open(temp_output_path, "rb") as f:
@@ -1524,7 +1565,10 @@ with tab1:
                 except Exception as e:
                     st.error(f"Could not load preview: {e}")
 
-                lang_clean = target_language.lower().strip().replace(" ", "_")
+                # Generate new filename: [Original Name]_translated.[ext]
+                base_name, ext = os.path.splitext(uploaded_file_name)
+                new_file_name = f"{base_name}_translated{ext}"
+
                 mime_type = (
                     "text/csv" if is_csv
                     else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1533,7 +1577,7 @@ with tab1:
                 st.download_button(
                     label=f" 📥 Download {html.escape(target_language)} file",
                     data=st.session_state.final_download_bytes,
-                    file_name=f"{game_id}_{lang_clean}_{uploaded_file_name}",
+                    file_name=new_file_name,
                     mime=mime_type,
                     type="primary",
                     use_container_width=True,
