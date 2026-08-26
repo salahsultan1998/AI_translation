@@ -1080,6 +1080,10 @@ tab1, tab2 = st.tabs([
 # TAB 1 — LOCALIZATION WORKSPACE
 # ============================================================
 
+# ============================================================
+# TAB 1 — LOCALIZATION WORKSPACE
+# ============================================================
+
 with tab1:
 
     # ── Step 1: Configuration ────────────
@@ -1122,7 +1126,7 @@ with tab1:
             render_html("""
             <div style="background: var(--surface-2); padding: 16px 20px; border-radius: var(--r-md); border: 1px dashed var(--border); margin-bottom: 16px;">
                 <div style="font-size: 0.85rem; color: var(--text-color); opacity: 0.8;">
-                    <strong>💡 Pro Tip:</strong> Ensure your sheets share the same column names if selecting multiple.
+                    <strong>💡 Pro Tip:</strong> You can now select sheets with different column layouts and configure them individually below!
                 </div>
             </div>
             """)
@@ -1147,7 +1151,7 @@ with tab1:
                     sheet_names = excel_obj.sheet_names
                     
                     selected_sheets_trans = st.multiselect(
-                        "Select sheets to translate (Columns mapped below will apply to ALL selected sheets)",
+                        "Select sheets to translate",
                         options=sheet_names,
                         default=[sheet_names[0]],
                         key="trans_sheet_select"
@@ -1157,7 +1161,7 @@ with tab1:
                         # Load all selected sheets into a dictionary for tabbed preview
                         for s in selected_sheets_trans:
                             preview_dfs[s] = pd.read_excel(excel_obj, sheet_name=s).fillna("").astype(str)
-                        # Keep a reference for column selection mapping
+                        # Keep a reference for the first sheet
                         df_preview = preview_dfs[selected_sheets_trans[0]]
                 except Exception as e:
                     st.error(f"Error reading Excel: {e}")
@@ -1188,46 +1192,70 @@ with tab1:
             preview_dfs["Manual_Sheet"] = df_preview
             st.session_state.selected_sheets_trans = selected_sheets_trans
 
-    # ── Step 3 & 4: Preview & Mapping ───────────────────────────────────
+    # ── Step 3 & 4: Per-Sheet Previews & Column Mapping ───────────────────────────────────
     if is_data_ready and df_preview is not None:
+        sheet_configurations = {}
+
         if len(df_preview.columns) == 0:
             st.error("The provided data has no columns.")
         else:
             if input_mode == "File Upload":
-                if not is_csv and selected_sheets_trans:
-                    render_html(f"""
-                    <div class="sec-header" style="margin-top:20px;">
-                        <div class="sec-header-icon">{icon("file", 14, "#6366f1")}</div>
-                        <div class="sec-title">Preview selected sheets ({len(selected_sheets_trans)})</div>
-                    </div>
-                    """)
-                    # Render native tabs for each selected sheet preview
-                    preview_tabs = st.tabs(selected_sheets_trans)
-                    for i, s_name in enumerate(selected_sheets_trans):
-                        with preview_tabs[i]:
-                            st.dataframe(preview_dfs[s_name], use_container_width=True, height=200)
-                else:
-                    st.dataframe(df_preview, use_container_width=True, height=200)
+                render_html(f"""
+                <div class="sec-header" style="margin-top:20px;">
+                    <div class="sec-header-icon">{icon("columns", 14, "#6366f1")}</div>
+                    <div class="sec-title">Configure and Map Columns</div>
+                </div>
+                <div class="sec-desc">
+                    {'Switch tabs below to configure unique column mappings for each individual sheet.' if not is_csv else 'Map the source, context, and target columns for your CSV file.'}
+                </div>
+                """)
 
-                col_sel1, col_sel2, col_sel3 = st.columns(3)
-                with col_sel1:
-                    selected_source_col = st.selectbox("Source text column", options=df_preview.columns, index=0)
-                with col_sel2:
-                    ctx_options = ["— No context column —"] + list(df_preview.columns)
-                    selected_context_col = st.selectbox("Context column", options=ctx_options, index=0)
-                with col_sel3:
-                    tgt_options = ["— Create new column —"] + list(df_preview.columns)
-                    target_col_selection = st.selectbox("Target column", options=tgt_options, index=0)
+                # Create tabs for each sheet (CSVs will simply render as one tab named "CSV_Sheet")
+                mapping_tabs = st.tabs(selected_sheets_trans)
+                for i, s_name in enumerate(selected_sheets_trans):
+                    with mapping_tabs[i]:
+                        df_s = preview_dfs[s_name]
+                        
+                        st.dataframe(df_s, use_container_width=True, height=180)
 
-                actual_context_col = None if selected_context_col == "— No context column —" else selected_context_col
-                final_target_col_name = st.text_input("New target column name", value=target_language) if target_col_selection == "— Create new column —" else target_col_selection
-                
-                st.session_state.final_target_col_name = final_target_col_name
+                        col_sel1, col_sel2, col_sel3 = st.columns(3)
+                        with col_sel1:
+                            src_col = st.selectbox("Source text column", options=df_s.columns, index=0, key=f"src_{s_name}")
+                        with col_sel2:
+                            ctx_options = ["— No context column —"] + list(df_s.columns)
+                            default_ctx_idx = 0
+                            for idx, c in enumerate(df_s.columns):
+                                if c.lower() in ["text_type", "context", "type", "description"]:
+                                    default_ctx_idx = idx + 1
+                                    break
+                            ctx_col = st.selectbox("Context column", options=ctx_options, index=default_ctx_idx, key=f"ctx_{s_name}")
+                        with col_sel3:
+                            tgt_options = ["— Create new column —"] + list(df_s.columns)
+                            tgt_col_sel = st.selectbox("Target column", options=tgt_options, index=0, key=f"tgt_{s_name}")
+
+                        actual_ctx = None if ctx_col == "— No context column —" else ctx_col
+                        if tgt_col_sel == "— Create new column —":
+                            final_tgt = st.text_input("New target column name", value=target_language, key=f"new_tgt_{s_name}")
+                        else:
+                            final_tgt = tgt_col_sel
+
+                        # Save this sheet's unique configuration
+                        sheet_configurations[s_name] = {
+                            "source": src_col,
+                            "context": actual_ctx,
+                            "target": final_tgt
+                        }
             else:
-                selected_source_col = "Source Text"
-                actual_context_col = "Context" if "Context" in df_preview.columns else None
-                st.session_state.final_target_col_name = target_language
+                # Fallback for Manual Entry only
+                s_name = selected_sheets_trans[0]
+                st.dataframe(df_preview, use_container_width=True, height=200)
+                sheet_configurations[s_name] = {
+                    "source": "Source Text",
+                    "context": "Context" if "Context" in df_preview.columns else None,
+                    "target": target_language
+                }
 
+            st.session_state.sheet_configurations = sheet_configurations
             use_smart_budget = (batch_mode == "Auto")
 
             # Custom Instructions
@@ -1267,15 +1295,19 @@ with tab1:
 
                     all_batches = []
                     final_sheet_results = {s: {} for s in selected_sheets_trans}
+                    sheet_target_cols = {}
                     
-                    # 1. READ ALL SHEETS AND PREPARE BATCHES
+                    # 1. READ ALL SHEETS USING THEIR INDIVIDUAL CONFIGURATIONS
                     for sheet_name in selected_sheets_trans:
+                        config = sheet_configurations[sheet_name]
+                        sheet_target_cols[sheet_name] = config["target"]
+                        
                         read_sheet_arg = sheet_name if not is_csv else None 
                         try:
                             rows = ExcelHandler.read_game_sheet(
                                 temp_input_path,
-                                text_column=selected_source_col,
-                                context_column=actual_context_col,
+                                text_column=config["source"],
+                                context_column=config["context"],
                                 sheet_name=read_sheet_arg
                             )
                             batches, alias_map = ExcelHandler.prepare_batches(rows, batch_size=manual_batch_size, use_smart_budget=use_smart_budget)
@@ -1283,7 +1315,7 @@ with tab1:
                             for b in batches:
                                 all_batches.append({"sheet": sheet_name, "rows": b, "alias": alias_map, "original_rows": rows})
                         except Exception as e:
-                            st.error(f"Could not read column '{selected_source_col}' in sheet '{sheet_name}'. Skipping.")
+                            st.error(f"Could not read sheet '{sheet_name}' using source column '{config['source']}': {e}")
 
                     total_batches = len(all_batches)
 
@@ -1339,11 +1371,11 @@ with tab1:
                             metric_progress.metric("Batches done", f"{completed_batches} / {total_batches}")
                             metric_time.metric("Time", f"{elapsed//60:02d}:{elapsed%60:02d}")
 
-                    # 3. WRITE ALL SHEETS BACK
+                    # 3. WRITE ALL SHEETS BACK WITH PER-SHEET TARGET COLUMNS
                     ExcelHandler.write_translated_workbook(
                         original_file=temp_input_path,
                         sheet_translations=final_sheet_results,
-                        target_column=st.session_state.get("final_target_col_name", target_language),
+                        sheet_target_columns=sheet_target_cols,
                         output_file=temp_output_path
                     )
 
@@ -1364,7 +1396,7 @@ with tab1:
                         <div>
                             <div class="result-title" style="font-size: 0.95rem; font-weight: 700; color: var(--success-text);">Multi-sheet translation complete</div>
                             <div class="result-sub" style="font-size: 0.85rem; color: var(--text-color); opacity: 0.7; margin-top: 3px;">
-                                {len(st.session_state.get("selected_sheets_trans", []))} sheet(s) successfully processed
+                                {len(st.session_state.get("selected_sheets_trans", []))} sheet(s) successfully processed with unique layouts
                             </div>
                         </div>
                     </div>

@@ -50,7 +50,7 @@ class ExcelHandler:
                 .replace(" ", " ")                      # Replace full-width space with normal space
             )
 
-            # Safely extract context notes/speaker tags (Fixed the None check here)
+            # Safely extract context notes/speaker tags
             ctx = None
             if context_column is not None and context_column in df.columns and pd.notna(row.get(context_column)):
                 ctx = str(row[context_column]).strip()
@@ -68,10 +68,7 @@ class ExcelHandler:
     @staticmethod
     def deduplicate_rows(rows: List[RowItem]) -> Tuple[List[RowItem], Dict[int, int]]:
         """Collapses rows with byte-identical source_text down to one representative
-        row. Returns (unique_rows, alias_map), where alias_map maps a duplicate
-        row's row_id to the representative row_id whose translation it should
-        reuse. This avoids paying for (and re-translating) the exact same string
-        twice, and guarantees identical output for identical input."""
+        row. Returns (unique_rows, alias_map)."""
         seen: Dict[str, int] = {}
         unique_rows: List[RowItem] = []
         alias_map: Dict[int, int] = {}
@@ -89,13 +86,7 @@ class ExcelHandler:
 
     @staticmethod
     def group_near_duplicates(rows: List[RowItem]) -> List[List[RowItem]]:
-        """Groups rows whose source_text is identical except for embedded
-        numbers (e.g. "Level 1" / "Level 2") into the same family, so a later
-        batching step keeps them together in one LLM call. Translating them
-        side by side keeps phrasing and target-language grammar (e.g. Arabic
-        singular/dual/plural agreement) consistent across the variants,
-        without us mechanically splicing numbers into a template ourselves.
-        Rows without a near-duplicate partner form a family of one."""
+        """Groups rows whose source_text is identical except for embedded numbers."""
         families: Dict[str, List[RowItem]] = {}
         order: List[str] = []
 
@@ -110,19 +101,16 @@ class ExcelHandler:
 
     @staticmethod
     def create_batches(families: List[List[RowItem]], batch_size: int = 10, use_smart_budget: bool = False) -> List[List[RowItem]]:
-        """Packs families (groups of rows that must stay together) into batches
-        using either fixed row count or a dynamic character budget. A family is
-        never split across two batches."""
+        """Packs families into batches using either fixed row count or a dynamic character budget."""
         if use_smart_budget:
             batches = []
             current_batch: List[RowItem] = []
             current_chars = 0
-            target_char_budget = 1000  # Safe character limit per batch
+            target_char_budget = 1000
 
             for family in families:
                 family_chars = sum(len(r.source_text) for r in family)
 
-                # If a single family exceeds the budget entirely, give it its own batch
                 if family_chars >= target_char_budget:
                     if current_batch:
                         batches.append(current_batch)
@@ -131,7 +119,6 @@ class ExcelHandler:
                     batches.append(list(family))
                     continue
 
-                # If adding this family breaks the budget, push current batch and start a new one
                 if current_chars + family_chars > target_char_budget:
                     batches.append(current_batch)
                     current_batch = list(family)
@@ -144,7 +131,6 @@ class ExcelHandler:
                 batches.append(current_batch)
             return batches
         else:
-            # Fixed row-count batching for Manual mode
             if batch_size <= 0:
                 batch_size = 10
             batches = []
@@ -170,15 +156,7 @@ class ExcelHandler:
 
     @staticmethod
     def prepare_batches(rows: List[RowItem], batch_size: int = 10, use_smart_budget: bool = False) -> Tuple[List[List[RowItem]], Dict[int, int]]:
-        """Full preprocessing pipeline: deduplicates identical rows, groups
-        near-duplicates so they translate together for consistency, then packs
-        the result into batches.
-
-        Returns (batches, alias_map). After translating every row in `batches`,
-        apply alias_map to fill in the skipped duplicate rows:
-            for dup_id, rep_id in alias_map.items():
-                translations[dup_id] = translations[rep_id]
-        """
+        """Full preprocessing pipeline: deduplicates, groups, and batches."""
         unique_rows, alias_map = ExcelHandler.deduplicate_rows(rows)
         families = ExcelHandler.group_near_duplicates(unique_rows)
         batches = ExcelHandler.create_batches(families, batch_size=batch_size, use_smart_budget=use_smart_budget)
@@ -188,16 +166,16 @@ class ExcelHandler:
     def write_translated_workbook(
         original_file: str,
         sheet_translations: Dict[str, Dict[int, str]],  # { "Sheet1": {0: "Trans", ...}, "Sheet2": {...} }
-        target_column: str,
+        sheet_target_columns: Dict[str, str],           # { "Sheet1": "Arabic", "Sheet2": "Target_Col" }
         output_file: str
     ):
-        """Maps translations back to multiple sheets, preserving all formatting."""
+        """Maps translations back to multiple sheets with per-sheet target columns, preserving formatting."""
         ext = os.path.splitext(output_file)[1].lower()
         
         if ext == ".csv":
-            # CSVs only have one sheet, we just take the first one available
             sheet_name = list(sheet_translations.keys())[0]
             translations = sheet_translations[sheet_name]
+            target_column = sheet_target_columns.get(sheet_name, "Translation")
             
             df = ExcelHandler._read_file(original_file)
             translated_list = []
@@ -207,20 +185,19 @@ class ExcelHandler:
             df.to_csv(output_file, index=False)
             
         else:
-            # Excel: Copy original file to preserve structure and formatting
             shutil.copy2(original_file, output_file)
             wb = openpyxl.load_workbook(output_file)
             
             with pd.ExcelFile(original_file) as xl:
-                # Loop through every sheet we have translations for
                 for sheet_name, translations in sheet_translations.items():
                     if sheet_name not in wb.sheetnames:
                         continue
                         
+                    target_column = sheet_target_columns.get(sheet_name, "Translation")
                     df = pd.read_excel(xl, sheet_name=sheet_name)
                     ws = wb[sheet_name]
                     
-                    # Find or create the target column
+                    # Find or create the target column for this specific sheet
                     target_col_idx = None
                     for cell in ws[1]:
                         if cell.value == target_column:
