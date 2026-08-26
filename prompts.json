@@ -29,6 +29,10 @@
     "sawa": {
       "genre": "Live Social App / Streaming",
       "tone_override": "Tone must be warm, casual, vibrant, and engaging. Infuse a light, friendly Saudi/Khaleeji social vibe that feels welcoming, lively, and natural for voice rooms, live streams, and community chat. Keep language smooth, modern, and youth-friendly without heavy local slang that might alienate broader Arabic speakers."
+    },
+      "S06": {
+      "genre": "SLG (Strategy Game)",
+      "tone_override": "Tone must be epic, strategic, commanding, and tactical for this historical hero-conquest and empire-building game. Reflect a world of legendary heroes, alliance warfare, and defense. Use immersive historical-military terminology while maintaining extreme conciseness for quick UI buttons and tactical prompts."
     }
   }
 }
