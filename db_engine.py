@@ -169,7 +169,7 @@ class SupabaseDBEngine:
             return 0
 
         total_inserted = 0
-        batch_size = 1000
+        batch_size = 500
 
         for i in range(0, len(valid_pairs), batch_size):
             batch = valid_pairs[i:i + batch_size]

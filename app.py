@@ -10,7 +10,7 @@ import streamlit as st
 from streamlit_cookies_controller import CookieController
 
 # Number of translation batches to run in parallel against the LLM API.
-MAX_CONCURRENT_BATCHES = 4
+MAX_CONCURRENT_BATCHES = 10
 
 from excel_engine import ExcelHandler
 from db_engine import SupabaseDBEngine
@@ -1092,6 +1092,7 @@ with tab1:
 
         with cfg_col1:
             model_options = [
+                "qwen/qwen3.6-flash",
                 "google/gemini-3.7-flash"
             ]
             model_choice = st.selectbox("AI Model", options=model_options, index=0)
