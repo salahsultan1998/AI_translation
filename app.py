@@ -1080,10 +1080,6 @@ tab1, tab2 = st.tabs([
 # TAB 1 — LOCALIZATION WORKSPACE
 # ============================================================
 
-# ============================================================
-# TAB 1 — LOCALIZATION WORKSPACE
-# ============================================================
-
 with tab1:
 
     # ── Step 1: Configuration ────────────
@@ -1270,10 +1266,27 @@ with tab1:
 
             # ── Step 5: Start ──────────────────────────
             st.divider()
-            start_clicked = st.button("▶  Start Multi-Sheet Translation", type="primary", use_container_width=True)
+            
+            # Initialize translation state if it doesn't exist
+            if "is_translating" not in st.session_state:
+                st.session_state.is_translating = False
+
+            # Create the button. It will be disabled and change text if is_translating is True
+            start_clicked = st.button(
+                "⏳ Translating..." if st.session_state.is_translating else "▶  Start Translation", 
+                type="primary", 
+                use_container_width=True,
+                disabled=st.session_state.is_translating
+            )
+
+            # Trigger the state change and instantly reload the page to visually disable the button
+            if start_clicked:
+                st.session_state.is_translating = True
+                st.rerun()
 
             # ── Step 6: Translation Engine + Progress ───────
-            if start_clicked:
+            # Run the logic based on the session state, NOT the button click directly
+            if st.session_state.is_translating:
                 st.session_state.translation_complete = False
 
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -1292,6 +1305,7 @@ with tab1:
                         )
                     except Exception as e:
                         st.error("Context fetch failed.")
+                        st.session_state.is_translating = False  # Keep the button from getting permanently locked
                         st.stop()
 
                     all_batches = []
@@ -1384,6 +1398,7 @@ with tab1:
                         st.session_state.final_download_bytes = f.read()
                     
                     st.session_state.translation_complete = True
+                    st.session_state.is_translating = False # Reset the button state here
                 st.rerun()
 
             # ── Step 7: Result + Download ───────────────────
