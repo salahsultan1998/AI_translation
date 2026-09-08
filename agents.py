@@ -11,16 +11,21 @@ from custom_types import (
     SingleRowResult,
     ReviewResult
 )
+from config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
+    DEFAULT_MODEL,
+    FALLBACK_MODEL,
+    UNSUPPORTED_MODEL_TOKENS
+)
 
 load_dotenv()
 
-DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-FALLBACK_MODEL = os.getenv("OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o-mini")
-UNSUPPORTED_MODEL_TOKENS = ("qwen/qwen-2.5-72b-instruct",)
+
 
 client = OpenAI(
-    base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.getenv("OPENROUTER_API_KEY")
+    base_url=OPENROUTER_BASE_URL,
+    api_key=OPENROUTER_API_KEY
 )
 
 # Regex to catch standard game variables and rich text tags (e.g., {0}, %s, <color=red>, </color>)
@@ -180,8 +185,8 @@ Respond ONLY with a valid JSON object matching this exact structure:
         temperature=0.2,
         fallback_model_name=fallback_model_name,
     )
-    # print("prompt:", user_message)
-    # print("response:", response)
+    
+
     content = response.choices[0].message.content or ""
     clean_json = extract_json_string(content)
 

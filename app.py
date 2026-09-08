@@ -4,19 +4,43 @@ import html
 import tempfile
 import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from textwrap import dedent
 import pandas as pd
 import streamlit as st
 from streamlit_cookies_controller import CookieController
-
-# Number of translation batches to run in parallel against the LLM API.
-MAX_CONCURRENT_BATCHES = 10
 
 from excel_engine import ExcelHandler
 from db_engine import SupabaseDBEngine
 from rag_engine import RAGEngine
 from agents import DEFAULT_MODEL, translator_agent, reviewer_agent
 from custom_types import BatchTranslationRequest
+from config import (
+    MAX_CONCURRENT_BATCHES,
+    INACTIVITY_LIMIT_SECONDS,
+    MODEL_OPTIONS,
+    SUPPORTED_LANGUAGES,
+    PROJECT_OPTIONS,
+)
+from page_design import (
+    inject_global_styles,
+    render_sidebar_brand,
+    render_sidebar_user,
+    render_sidebar_section,
+    render_db_badge,
+    render_page_header,
+    render_metric_card,
+    render_section,
+    render_pro_tip,
+    render_success_banner,
+    render_db_panel_header,
+    render_conflict_badge,
+    render_term_choice_box,
+    render_preview_bar,
+    render_login_brand,
+    render_login_form_marker,
+    render_login_footer,
+    render_footer,
+    spacer,
+)
 
 
 # ============================================================
@@ -29,17 +53,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-
-# ============================================================
-# HTML HELPER
-# ============================================================
-
-def render_html(html_string):
-    st.markdown(
-        dedent(html_string).strip(),
-        unsafe_allow_html=True,
-    )
 
 
 # ============================================================
@@ -62,689 +75,7 @@ def fetch_tm(_db, game_id, target_language):
     return _db.get_tm_for_game(game_id, target_language)
 
 
-# ============================================================
-# DESIGN SYSTEM — DYNAMIC THEME CSS
-# ============================================================
-
-render_html("""
-<style>
-/* ── Typeface ─────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-
-/* ── Dynamic Design Tokens ────────────────────────────────── */
-/* These tokens inherit from Streamlit's native theme to seamlessly 
-   support BOTH Light and Dark mode switches */
-:root {
-  --surface-0:   var(--background-color);
-  --surface-1:   var(--secondary-background-color);
-  --surface-2:   var(--secondary-background-color);
-  --surface-3:   rgba(128, 128, 128, 0.1);
-
-  --accent:      #6366f1;
-  --accent-dim:  #4f46e5;
-  --accent-glow: rgba(99, 102, 241, 0.25);
-  --accent-soft: rgba(99, 102, 241, 0.1);
-
-  --success:     #22c55e;
-  --success-text:#16a34a;
-  --success-soft: rgba(34, 197, 94, 0.15);
-  
-  --warning:     #f59e0b;
-  --warning-soft: rgba(245, 158, 11, 0.15);
-
-  /* Transparent grey borders work perfectly on both white and black backgrounds */
-  --border:       rgba(128, 128, 128, 0.25);
-  --border-hover: rgba(128, 128, 128, 0.4);
-
-  --r-sm:  6px;
-  --r-md:  10px;
-  --r-lg:  14px;
-  --r-xl:  20px;
-
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
-  --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
-  --shadow-lg: 0 12px 40px rgba(0,0,0,0.12);
-}
-
-/* ── Global Reset ─────────────────────────────────────────── */
-html, body, [class*="css"] {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
-
-.main .block-container {
-  padding: 1.5rem 2rem 3rem 2rem;
-  max-width: 1440px;
-}
-
-/* ── Forms Globally ───────────────────────────────────────── */
-[data-testid="stForm"] {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 24px;
-}
-
-/* Specific styling for the Login Form via pseudo-selector */
-[data-testid="stForm"]:has(.login-marker) {
-  border-radius: var(--r-xl) !important;
-  padding: 40px 36px !important;
-  box-shadow: var(--shadow-lg) !important;
-}
-
-/* ── Sidebar ──────────────────────────────────────────────── */
-section[data-testid="stSidebar"] > div { padding: 0; }
-
-section[data-testid="stSidebar"] label {
-  color: var(--text-color) !important;
-  opacity: 0.7 !important;
-  font-size: 0.8rem !important;
-  font-weight: 600 !important;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-section[data-testid="stSidebar"] .stSelectbox > div > div {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  color: var(--text-color);
-}
-
-[data-testid="InputInstructions"] { display: none !important; }
-
-/* ── Sidebar Brand ────────────────────────────────────────── */
-.sb-brand {
-  padding: 20px 20px 16px 20px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-
-.sb-logo {
-  width: 36px; height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-  box-shadow: 0 4px 14px var(--accent-glow);
-}
-
-.sb-logo svg { width: 18px; height: 18px; }
-
-.sb-wordmark { line-height: 1.2; }
-
-.sb-title {
-  color: var(--text-color);
-  font-size: 1.05rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.sb-sub {
-  color: var(--text-color);
-  opacity: 0.6;
-  font-size: 0.75rem;
-  font-weight: 500;
-  margin-top: 2px;
-}
-
-/* ── Sidebar Section Label ────────────────────────────────── */
-.sb-section {
-  padding: 16px 20px 6px 20px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--text-color);
-  opacity: 0.5;
-}
-
-/* ── DB Context Badge ─────────────────────────────────────── */
-.sb-db-badge {
-  margin: 6px 16px 4px 16px;
-  background: var(--success-soft);
-  border: 1px solid var(--success-soft);
-  border-radius: var(--r-md);
-  padding: 8px 12px;
-}
-
-.sb-db-label {
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--success-text);
-  opacity: 0.8;
-}
-
-.sb-db-value {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--success-text);
-  margin-top: 3px;
-  font-family: 'JetBrains Mono', monospace;
-  word-break: break-all;
-}
-
-/* ── Sidebar User/Footer ──────────────────────────────────── */
-.sb-user {
-  margin: 8px 16px 4px 16px;
-  background: var(--surface-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 9px 12px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.sb-avatar {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
-  display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 700; color: white;
-  flex-shrink: 0;
-}
-
-.sb-user-email {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--text-color);
-  opacity: 0.8;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sb-credit {
-  padding: 12px 20px 20px 20px;
-  font-size: 0.75rem;
-  color: var(--text-color);
-  opacity: 0.5;
-  line-height: 1.6;
-}
-
-/* ── Page Header ──────────────────────────────────────────── */
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 0 0 20px 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 22px;
-}
-
-.page-header-left { display: flex; align-items: center; gap: 14px; }
-
-.page-title {
-  font-size: 1.35rem;
-  font-weight: 800;
-  color: var(--text-color);
-  letter-spacing: -0.04em;
-  line-height: 1.15;
-}
-
-.page-desc {
-  color: var(--text-color);
-  opacity: 0.7;
-  font-size: 0.85rem;
-  margin-top: 4px;
-  font-weight: 400;
-}
-
-.page-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.header-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-color);
-  opacity: 0.8;
-  white-space: nowrap;
-}
-
-.header-badge .dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 6px var(--success);
-}
-
-/* ── Metric Cards ─────────────────────────────────────────── */
-.metric-card {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 15px 18px;
-  min-height: 82px;
-  transition: border-color 0.15s;
-}
-
-.metric-card:hover { border-color: var(--border-hover); }
-
-.metric-eyebrow {
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-color);
-  opacity: 0.6;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 7px;
-}
-
-.metric-value {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: var(--text-color);
-  letter-spacing: -0.02em;
-}
-
-.metric-sub {
-  font-size: 0.75rem;
-  color: var(--text-color);
-  opacity: 0.6;
-  margin-top: 3px;
-}
-
-/* ── Tabs ─────────────────────────────────────────────────── */
-.stTabs [data-baseweb="tab-list"] {
-  gap: 2px;
-  background: transparent;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0;
-}
-
-.stTabs [data-baseweb="tab"] {
-  height: 44px;
-  padding: 0 18px;
-  color: var(--text-color);
-  opacity: 0.6;
-  font-weight: 600;
-  font-size: 0.9rem;
-  border-radius: var(--r-sm) var(--r-sm) 0 0;
-  background: transparent;
-  letter-spacing: -0.01em;
-}
-
-.stTabs [aria-selected="true"] {
-  color: var(--text-color) !important;
-  opacity: 1 !important;
-  background: var(--surface-2) !important;
-}
-
-.stTabs [data-baseweb="tab-highlight"] {
-  background: var(--accent);
-  height: 2px;
-}
-
-/* ── Section Headers ──────────────────────────────────────── */
-.sec-header {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin: 22px 0 6px 0;
-}
-
-.sec-header-icon {
-  width: 28px; height: 28px;
-  border-radius: var(--r-sm);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-soft);
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-
-.sec-header-icon svg { width: 14px; height: 14px; color: var(--accent); }
-
-.sec-title {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-color);
-  letter-spacing: -0.02em;
-}
-
-.sec-desc {
-  font-size: 0.85rem;
-  color: var(--text-color);
-  opacity: 0.7;
-  margin: 3px 0 14px 0;
-  line-height: 1.55;
-}
-
-/* ── Upload Zone ──────────────────────────────────────────── */
-[data-testid="stFileUploader"] {
-  background: var(--surface-1);
-  border: 1.5px dashed rgba(128,128,128,0.4);
-  border-radius: var(--r-lg);
-  padding: 6px;
-  transition: border-color 0.2s;
-}
-
-[data-testid="stFileUploader"]:hover {
-  border-color: var(--accent);
-}
-
-[data-testid="stFileUploaderDropzone"] {
-  background: var(--surface-3);
-  border-radius: 10px;
-}
-
-/* ── Data Preview Container ───────────────────────────────── */
-.preview-wrap {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  overflow: hidden;
-  margin-bottom: 4px;
-}
-
-.preview-bar {
-  padding: 9px 14px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.preview-bar-title {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-color);
-  opacity: 0.8;
-  display: flex; align-items: center; gap: 6px;
-}
-
-.preview-bar-count {
-  font-size: 0.75rem;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--surface-3);
-  color: var(--text-color);
-  opacity: 0.8;
-  font-weight: 600;
-}
-
-/* ── Batch Status Strip ───────────────────────────────────── */
-.batch-strip {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 10px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.batch-strip-label {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-color);
-  opacity: 0.8;
-}
-
-.batch-strip-value {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--text-color);
-  opacity: 0.6;
-  font-family: 'JetBrains Mono', monospace;
-}
-
-/* ── Buttons ──────────────────────────────────────────────── */
-.stButton > button {
-  border-radius: var(--r-md);
-  min-height: 38px;
-  font-weight: 600;
-  font-size: 0.9rem;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-color);
-  transition: all 0.15s;
-  letter-spacing: -0.01em;
-}
-
-.stButton > button:hover {
-  border-color: var(--border-hover);
-  background: var(--surface-3);
-}
-
-.stButton > button[kind="primary"] {
-  background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
-  border: none !important;
-  color: white !important;
-  box-shadow: 0 4px 14px var(--accent-glow);
-}
-
-.stButton > button[kind="primary"]:hover {
-  box-shadow: 0 6px 20px rgba(99,102,241,0.35);
-  transform: translateY(-1px);
-}
-
-.stDownloadButton > button {
-  border-radius: var(--r-md);
-  font-weight: 700;
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
-  border: none;
-  color: white !important;
-  font-size: 0.9rem;
-  box-shadow: 0 4px 16px var(--accent-glow);
-}
-
-/* ── Progress Block ───────────────────────────────────────── */
-.progress-card {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 20px;
-  margin: 14px 0;
-}
-
-.progress-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.progress-title {
-  font-size: 0.9rem;
-  font-weight: 700;
-  color: var(--text-color);
-  display: flex; align-items: center; gap: 8px;
-}
-
-.progress-spinner {
-  width: 14px; height: 14px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  display: inline-block;
-}
-
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.stProgress > div > div > div {
-  background: linear-gradient(90deg, #6366f1, #818cf8);
-  border-radius: 999px;
-}
-
-/* ── Metrics (native) override ────────────────────────────── */
-[data-testid="stMetric"] {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 12px 15px;
-}
-
-[data-testid="stMetricLabel"] {
-  color: var(--text-color) !important;
-  opacity: 0.7 !important;
-  font-size: 0.75rem !important;
-  font-weight: 700 !important;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-[data-testid="stMetricValue"] {
-  color: var(--text-color) !important;
-  font-size: 1.1rem !important;
-  font-weight: 700 !important;
-}
-
-/* ── Dataframe ────────────────────────────────────────────── */
-[data-testid="stDataFrame"] {
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  overflow: hidden;
-}
-
-/* ── Inputs / Text ────────────────────────────────────────── */
-.stTextArea textarea,
-.stTextInput input,
-.stSelectbox > div > div {
-  background: var(--surface-2) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: var(--r-md) !important;
-  color: var(--text-color) !important;
-  font-size: 0.9rem;
-}
-
-.stTextArea textarea:focus,
-.stTextInput input:focus {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 2px var(--accent-soft) !important;
-}
-
-/* ── Radio ────────────────────────────────────────────────── */
-.stRadio > div { gap: 8px; }
-
-.stRadio > div > label {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 7px 14px;
-  font-size: 0.9rem;
-  color: var(--text-color);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.stRadio > div > label:hover {
-  border-color: var(--border-hover);
-}
-
-/* ── DB Panel Header ──────────────────────────────────────── */
-.db-panel-header {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 18px 22px;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-
-/* ── Conflict Card ────────────────────────────────────────── */
-.conflict-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: var(--warning-soft);
-  border: 1px solid var(--warning-soft);
-  border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--warning);
-  margin-bottom: 12px;
-}
-
-/* ── Divider ──────────────────────────────────────────────── */
-.stDivider { border-color: var(--border) !important; }
-
-hr { border-color: var(--border) !important; }
-
-/* ── Caption ──────────────────────────────────────────────── */
-.stCaption { color: var(--text-color) !important; opacity: 0.6 !important; font-size: 0.8rem !important; }
-
-/* ── Footer ───────────────────────────────────────────────── */
-.main-footer {
-  margin-top: 48px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  text-align: center;
-  color: var(--text-color);
-  opacity: 0.5;
-  font-size: 0.8rem;
-  letter-spacing: 0.05em;
-}
-
-/* ── Scrollbar ────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
-</style>
-
-<script>
-// Prevent Ctrl+C / Cmd+C from triggering Streamlit's cache-clear shortcut modal
-document.addEventListener('keydown', function(e) {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-        e.stopImmediatePropagation();
-    }
-}, true);
-</script>
-""")
-
-
-# ============================================================
-# SVG ICON LIBRARY
-# ============================================================
-
-def icon(name, size=16, color="currentColor"):
-    """Return an inline SVG icon string."""
-    icons = {
-        "globe": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
-        "database": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>',
-        "upload": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>',
-        "play": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
-        "check-circle": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
-        "project": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="6" height="4"/><rect x="16" y="3" width="6" height="4"/><rect x="9" y="10" width="6" height="4"/><line x1="5" y1="7" x2="5" y2="19"/><line x1="19" y1="7" x2="19" y2="19"/><line x1="5" y1="19" x2="19" y2="19"/></svg>',
-        "language": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>',
-        "cpu": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>',
-        "columns": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></svg>',
-        "settings": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 1.41 1.41L19.07 4.93zM12 2v2M12 20v2M4.93 4.93 3.51 6.34M19.07 19.07l-1.41-1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M19.07 4.93 17.66 6.34"/></svg>',
-        "file": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>',
-        "book": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
-        "warning": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-        "lock": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
-        "download": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
-        "layers": f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 17 22 12"/></svg>',
-    }
-    return icons.get(name, "")
+inject_global_styles()
 
 
 # ============================================================
@@ -763,25 +94,20 @@ def clear_authenticated_session():
         pass
     try:
         cookie_controller.remove("locatool_auth_token")
-        # Give the browser a brief moment to process cookie deletion
         time.sleep(0.5)
     except Exception:
         pass
-    
-    # Set a flag to prevent immediate auto-login from a lingering cookie read
+
     st.session_state.just_logged_out = True
     st.session_state.user = None
-    
-    # Clear all other keys safely without losing our logout flag
+
     keys_to_keep = {"just_logged_out"}
     for key in list(st.session_state.keys()):
         if key not in keys_to_keep:
             del st.session_state[key]
-            
+
     st.query_params.clear()
 
-
-# 1. Auto-login / session restore via browser cookie
 
 if st.session_state.user is None and not st.session_state.get("just_logged_out", False):
     try:
@@ -799,56 +125,17 @@ if st.session_state.user is None and not st.session_state.get("just_logged_out",
 
 
 def show_login_page():
-    
     st.markdown("<br><br>", unsafe_allow_html=True)
-    
-    # Use native layout columns to center the form cleanly
     _, col, _ = st.columns([1, 1.2, 1])
-    
+
     with col:
         with st.form("login_form"):
-            # Hidden marker lets us target this exact form via CSS
-            st.markdown('<div class="login-marker"></div>', unsafe_allow_html=True)
-            
-            st.markdown("""
-            <div style="display:flex; flex-direction: column; align-items:center; gap:12px; margin-bottom:24px;">
-                <div style="width:48px;height:48px;border-radius:12px;
-                            background:linear-gradient(135deg,#6366f1,#4f46e5);
-                            display:flex;align-items:center;justify-content:center;
-                            box-shadow:0 6px 20px rgba(99,102,241,0.25);">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
-                         stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="2" y1="12" x2="22" y2="12"/>
-                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10
-                                 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                    </svg>
-                </div>
-                <div style="text-align: center;">
-                    <div style="color:var(--text-color);font-size:1.4rem;font-weight:800;letter-spacing:-0.03em;">
-                        LocaTool
-                    </div>
-                    <div style="color:var(--text-color); opacity:0.6; font-size:0.9rem;margin-top:4px;">
-                        Sign in to access your localization workspace
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            render_login_form_marker()
+            render_login_brand()
 
-            email = st.text_input(
-                "Email address",
-                placeholder="e.g. you@gmail.com",
-            )
-            password = st.text_input(
-                "Password",
-                type="password",
-                placeholder="••••••••••",
-            )
-            submit_button = st.form_submit_button(
-                "Sign in →",
-                use_container_width=True,
-                type="primary",
-            )
+            email = st.text_input("Email address", placeholder="e.g. you@gmail.com")
+            password = st.text_input("Password", type="password", placeholder="••••••••••")
+            submit_button = st.form_submit_button("Sign in →", use_container_width=True, type="primary")
 
             if submit_button:
                 email = email.strip()
@@ -867,36 +154,28 @@ def show_login_page():
                         st.session_state.user = user
                         st.session_state.last_active = time.time()
                         try:
-                            cookie_controller.set("locatool_auth_token", token, max_age=3600*24*7)  # 7 days
-                            time.sleep(0.5)  # Ensure cookie is set before rerun
+                            cookie_controller.set("locatool_auth_token", token, max_age=3600*24*7)
+                            time.sleep(0.5)
                         except Exception as e:
                             clear_authenticated_session()
                             st.error(f"Session error: {e}")
                             st.stop()
                         st.rerun()
 
-        st.markdown("""
-        <div style="margin-top:20px;text-align:center;color:var(--text-color); opacity:0.5; font-size:0.75rem;">
-            Protected workspace · Authorized access only
-        </div>
-        """, unsafe_allow_html=True)
+        render_login_footer()
 
 
-# 2. Gatekeeper Check
 if st.session_state.user is None:
     show_login_page()
     st.stop()
 
-
-# 3. 10-Minute Rolling Inactivity Timer
-INACTIVITY_LIMIT = 600
 
 if "last_active" not in st.session_state:
     st.session_state.last_active = time.time()
 
 current_time = time.time()
 
-if current_time - st.session_state.last_active > INACTIVITY_LIMIT:
+if current_time - st.session_state.last_active > INACTIVITY_LIMIT_SECONDS:
     clear_authenticated_session()
     st.warning("Session expired after 10 minutes of inactivity. Please sign in again.")
     st.stop()
@@ -909,171 +188,60 @@ st.session_state.last_active = current_time
 # ============================================================
 
 with st.sidebar:
+    render_sidebar_brand()
 
-    # Brand
-    render_html(f"""
-    <div class="sb-brand">
-        <div class="sb-logo">
-            {icon("globe", 18, "white")}
-        </div>
-        <div class="sb-wordmark">
-            <div class="sb-title">LocaTool</div>
-            <div class="sb-sub">AI Localization Workspace</div>
-        </div>
-    </div>
-    """)
-
-    # User
     if st.session_state.user:
-        safe_email = html.escape(str(st.session_state.user.email))
-        initial = safe_email[0].upper() if safe_email else "U"
-        render_html(f"""
-        <div class="sb-user">
-            <div class="sb-avatar">{initial}</div>
-            <div class="sb-user-email">{safe_email}</div>
-        </div>
-        """)
+        render_sidebar_user(st.session_state.user.email)
 
     if st.button("Sign out", use_container_width=True, key="logout_btn"):
         clear_authenticated_session()
         st.rerun()
 
-    # Project Section
-    render_html('<div class="sb-section">Project Setup</div>')
+    render_sidebar_section("Project Setup")
 
-    project_list = [
-        "DM_03",
-        "Tarbi3a_Baloot",
-        "Baloot_Challenges",
-        "Direct_translation",
-        "sawa",
-        "S06"
-    ]
-
-    selected_project = st.selectbox(
-        "Active Project",
-        options=project_list,
-        label_visibility="visible",
-    )
+    selected_project = st.selectbox("Active Project", options=PROJECT_OPTIONS, label_visibility="visible")
 
     if selected_project == "+ Add New Project":
-        game_id = st.text_input(
-            "Project identifier",
-            value="new_project",
-            placeholder="e.g. S06",
-        )
+        game_id = st.text_input("Project identifier", value="new_project", placeholder="e.g. S06")
     else:
         game_id = selected_project
 
-    # Language Section
-    supported_languages = ["Arabic", "English", "Turkish"]
+    target_language = st.selectbox("Target language", options=SUPPORTED_LANGUAGES, index=0, label_visibility="visible")
 
-    target_language = st.selectbox(
-        "Target language",
-        options=supported_languages,
-        index=0,
-        label_visibility="visible",
-    )
-
-    # DB context badge
-    safe_game_id = html.escape(game_id.lower().strip())
-    safe_target_lang = html.escape(target_language.lower().strip())
-
-    render_html(f"""
-    <div class="sb-db-badge">
-        <div class="sb-db-label">Active database</div>
-        <div class="sb-db-value">{safe_game_id}_{safe_target_lang}</div>
-    </div>
-    """)
+    render_db_badge(game_id, target_language)
 
 
 # ============================================================
-# PAGE HEADER
+# PAGE HEADER + METRIC CARDS
 # ============================================================
 
-render_html(f"""
-<div class="page-header">
-    <div class="page-header-left">
-        <div>
-            <div class="page-title">Localization Dashboard</div>
-            <div class="page-desc">
-                Translate, review and manage game text with AI-powered workflows.
-            </div>
-        </div>
-    </div>
-    <div class="page-header-right">
-        <div class="header-badge">
-            <span class="dot"></span>
-            {html.escape(game_id)}
-        </div>
-        <div class="header-badge">
-            {icon("language", 12, "currentColor")}
-            {html.escape(target_language)}
-        </div>
-        <div class="header-badge">
-            {icon("check-circle", 12, "currentColor")}
-            System Ready
-        </div>
-    </div>
-</div>
-""")
-
-
-# ============================================================
-# PROJECT METRIC CARDS
-# ============================================================
+render_page_header(game_id, target_language)
 
 mc1, mc2, mc3 = st.columns(3)
 
 with mc1:
-    render_html(f"""
-    <div class="metric-card">
-        <div class="metric-eyebrow">
-            {icon("project", 12, "#6366f1")}
-            Active project
-        </div>
-        <div class="metric-value">{html.escape(game_id)}</div>
-        <div class="metric-sub">Current localization target</div>
-    </div>
-    """)
+    render_metric_card("project", "Active project", game_id, "Current localization target")
 
 with mc2:
-    render_html(f"""
-    <div class="metric-card">
-        <div class="metric-eyebrow">
-            {icon("language", 12, "#6366f1")}
-            Target language
-        </div>
-        <div class="metric-value">{html.escape(target_language)}</div>
-        <div class="metric-sub">Chinese → {html.escape(target_language)}</div>
-    </div>
-    """)
+    render_metric_card("language", "Target language", target_language, f"Chinese → {target_language}")
 
 with mc3:
-    render_html(f"""
-    <div class="metric-card">
-        <div class="metric-eyebrow">
-            <div style="background: var(--accent-soft); border-radius: 4px; padding: 2px;">
-                {icon("database", 12, "#6366f1")}
-            </div>
-            Knowledge Base
-        </div>
-        <div class="metric-value">Connected</div>
-        <div class="metric-sub">TM & Glossary ready for translation</div>
-    </div>
-    """)
+    render_metric_card(
+        "database",
+        "Knowledge Base",
+        "Connected",
+        "TM & Glossary ready for translation",
+        wrap_icon=True,
+    )
 
-render_html('<div style="height:18px"></div>')
+spacer(18)
 
 
 # ============================================================
 # TABS
 # ============================================================
 
-tab1, tab2 = st.tabs([
-    "  🌐  Localize Game Text  ",
-    "  🗄️  Database & Context  ",
-])
+tab1, tab2 = st.tabs(["  🌐  Localize Game Text  ", "  🗄️  Database & Context  "])
 
 
 # ============================================================
@@ -1081,16 +249,11 @@ tab1, tab2 = st.tabs([
 # ============================================================
 
 with tab1:
-
-    # ── Step 1: Configuration ────────────
     with st.expander("⚙️ Advanced Settings (AI Model & Batching)"):
         cfg_col1, cfg_col2 = st.columns(2)
 
         with cfg_col1:
-            model_options = [
-                "qwen/qwen3.6-flash",
-                "google/gemini-3.7-flash"
-            ]
+            model_options = MODEL_OPTIONS
             model_choice = st.selectbox("AI Model", options=model_options, index=0)
 
         with cfg_col2:
@@ -1100,13 +263,7 @@ with tab1:
             else:
                 manual_batch_size = 10
 
-   # ── Step 2: Input Method Selection ────────────────────────────────────────
-    render_html(f"""
-    <div class="sec-header">
-        <div class="sec-header-icon">{icon("upload", 14, "#6366f1")}</div>
-        <div class="sec-title">Provide game text</div>
-    </div>
-    """)
+    render_section("upload", "Provide game text")
 
     input_mode = st.radio("Input Mode", options=["File Upload", "Manual Entry"], horizontal=True, label_visibility="collapsed")
 
@@ -1120,13 +277,9 @@ with tab1:
 
     if input_mode == "File Upload":
         if "game_text_uploader" not in st.session_state or not st.session_state.game_text_uploader:
-            render_html("""
-            <div style="background: var(--surface-2); padding: 16px 20px; border-radius: var(--r-md); border: 1px dashed var(--border); margin-bottom: 16px;">
-                <div style="font-size: 0.85rem; color: var(--text-color); opacity: 0.8;">
-                    <strong>💡 Pro Tip:</strong> You can now select sheets with different column layouts and configure them individually below!
-                </div>
-            </div>
-            """)
+            render_pro_tip(
+                "<strong>💡 Pro Tip:</strong> You can now select sheets with different column layouts and configure them individually below!"
+            )
 
         uploaded_file = st.file_uploader("Drop your file here", type=["xlsx", "csv"], key="game_text_uploader", label_visibility="collapsed")
 
@@ -1137,7 +290,7 @@ with tab1:
                 st.session_state.pop("final_download_bytes", None)
 
             is_csv = uploaded_file.name.lower().endswith(".csv")
-            
+
             if is_csv:
                 selected_sheets_trans = ["CSV_Sheet"]
                 df_preview = pd.read_csv(uploaded_file).fillna("").astype(str)
@@ -1146,23 +299,21 @@ with tab1:
                 try:
                     excel_obj = pd.ExcelFile(uploaded_file)
                     sheet_names = excel_obj.sheet_names
-                    
+
                     selected_sheets_trans = st.multiselect(
                         "Select sheets to translate",
                         options=sheet_names,
                         default=[sheet_names[0]],
                         key="trans_sheet_select"
                     )
-                    
+
                     if selected_sheets_trans:
-                        # Load all selected sheets into a dictionary for tabbed preview
                         for s in selected_sheets_trans:
                             preview_dfs[s] = pd.read_excel(excel_obj, sheet_name=s).fillna("").astype(str)
-                        # Keep a reference for the first sheet
                         df_preview = preview_dfs[selected_sheets_trans[0]]
                 except Exception as e:
                     st.error(f"Error reading Excel: {e}")
-                    
+
             st.session_state.selected_sheets_trans = selected_sheets_trans
             uploaded_file.seek(0)
             file_bytes_buffer = uploaded_file.getbuffer()
@@ -1170,13 +321,12 @@ with tab1:
             is_data_ready = bool(selected_sheets_trans)
 
     else:
-        # Manual Entry
         if "manual_trans_df" not in st.session_state:
             st.session_state.manual_trans_df = pd.DataFrame({"Source Text": [""], "Context": [""]})
 
         edited_df = st.data_editor(st.session_state.manual_trans_df, num_rows="dynamic", use_container_width=True)
         valid_rows = edited_df[edited_df["Source Text"].str.strip() != ""]
-        
+
         if not valid_rows.empty:
             df_preview = edited_df.copy()
             csv_buffer = io.BytesIO()
@@ -1189,7 +339,6 @@ with tab1:
             preview_dfs["Manual_Sheet"] = df_preview
             st.session_state.selected_sheets_trans = selected_sheets_trans
 
-    # ── Step 3 & 4: Per-Sheet Previews & Column Mapping ───────────────────────────────────
     if is_data_ready and df_preview is not None:
         sheet_configurations = {}
 
@@ -1197,22 +346,22 @@ with tab1:
             st.error("The provided data has no columns.")
         else:
             if input_mode == "File Upload":
-                render_html(f"""
-                <div class="sec-header" style="margin-top:20px;">
-                    <div class="sec-header-icon">{icon("columns", 14, "#6366f1")}</div>
-                    <div class="sec-title">Configure and Map Columns</div>
-                </div>
-                <div class="sec-desc">
-                    {'Switch tabs below to configure unique column mappings for each individual sheet.' if not is_csv else 'Map the source, context, and target columns for your CSV file.'}
-                </div>
-                """)
+                mapping_desc = (
+                    "Switch tabs below to configure unique column mappings for each individual sheet."
+                    if not is_csv
+                    else "Map the source, context, and target columns for your CSV file."
+                )
+                render_section(
+                    "columns",
+                    "Configure and Map Columns",
+                    description=mapping_desc,
+                    extra_style="margin-top:20px;",
+                )
 
-                # Create tabs for each sheet (CSVs will simply render as one tab named "CSV_Sheet")
                 mapping_tabs = st.tabs(selected_sheets_trans)
                 for i, s_name in enumerate(selected_sheets_trans):
                     with mapping_tabs[i]:
                         df_s = preview_dfs[s_name]
-                        
                         st.dataframe(df_s, use_container_width=True, height=180)
 
                         col_sel1, col_sel2, col_sel3 = st.columns(3)
@@ -1236,14 +385,12 @@ with tab1:
                         else:
                             final_tgt = tgt_col_sel
 
-                        # Save this sheet's unique configuration
                         sheet_configurations[s_name] = {
                             "source": src_col,
                             "context": actual_ctx,
                             "target": final_tgt
                         }
             else:
-                # Fallback for Manual Entry only
                 s_name = selected_sheets_trans[0]
                 st.dataframe(df_preview, use_container_width=True, height=200)
                 sheet_configurations[s_name] = {
@@ -1255,37 +402,25 @@ with tab1:
             st.session_state.sheet_configurations = sheet_configurations
             use_smart_budget = (batch_mode == "Auto")
 
-            # Custom Instructions
-            render_html(f"""
-            <div class="sec-header" style="margin-top:20px;">
-                <div class="sec-header-icon">{icon("cpu", 14, "#6366f1")}</div>
-                <div class="sec-title">Custom AI Instructions (Optional)</div>
-            </div>
-            """)
+            render_section("cpu", "Custom AI Instructions (Optional)", extra_style="margin-top:20px;")
             custom_instructions_input = st.text_area("Custom AI Instructions", placeholder="Type rules here...", label_visibility="collapsed", height=100)
 
-            # ── Step 5: Start ──────────────────────────
             st.divider()
-            
-            # Initialize translation state if it doesn't exist
+
             if "is_translating" not in st.session_state:
                 st.session_state.is_translating = False
 
-            # Create the button. It will be disabled and change text if is_translating is True
             start_clicked = st.button(
-                "⏳ Translating..." if st.session_state.is_translating else "▶  Start Translation", 
-                type="primary", 
+                "⏳ Translating..." if st.session_state.is_translating else "▶  Start Translation",
+                type="primary",
                 use_container_width=True,
                 disabled=st.session_state.is_translating
             )
 
-            # Trigger the state change and instantly reload the page to visually disable the button
             if start_clicked:
                 st.session_state.is_translating = True
                 st.rerun()
 
-            # ── Step 6: Translation Engine + Progress ───────
-            # Run the logic based on the session state, NOT the button click directly
             if st.session_state.is_translating:
                 st.session_state.translation_complete = False
 
@@ -1305,19 +440,18 @@ with tab1:
                         )
                     except Exception as e:
                         st.error("Context fetch failed.")
-                        st.session_state.is_translating = False  # Keep the button from getting permanently locked
+                        st.session_state.is_translating = False
                         st.stop()
 
                     all_batches = []
                     final_sheet_results = {s: {} for s in selected_sheets_trans}
                     sheet_target_cols = {}
-                    
-                    # 1. READ ALL SHEETS USING THEIR INDIVIDUAL CONFIGURATIONS
+
                     for sheet_name in selected_sheets_trans:
                         config = sheet_configurations[sheet_name]
                         sheet_target_cols[sheet_name] = config["target"]
-                        
-                        read_sheet_arg = sheet_name if not is_csv else None 
+
+                        read_sheet_arg = sheet_name if not is_csv else None
                         try:
                             rows = ExcelHandler.read_game_sheet(
                                 temp_input_path,
@@ -1326,7 +460,7 @@ with tab1:
                                 sheet_name=read_sheet_arg
                             )
                             batches, alias_map = ExcelHandler.prepare_batches(rows, batch_size=manual_batch_size, use_smart_budget=use_smart_budget)
-                            
+
                             for b in batches:
                                 all_batches.append({"sheet": sheet_name, "rows": b, "alias": alias_map, "original_rows": rows})
                         except Exception as e:
@@ -1345,7 +479,7 @@ with tab1:
                     def _translate_batch_dict(batch_dict, b_idx):
                         rag_context = rag.get_batch_context(batch_rows=batch_dict["rows"], target_language=target_language)
                         batch_req = BatchTranslationRequest(batch_id=b_idx, rows=batch_dict["rows"], target_language=target_language)
-                        
+
                         resp = translator_agent(
                             batch_request=batch_req,
                             rag_context=rag_context,
@@ -1357,22 +491,21 @@ with tab1:
                         )
                         return batch_dict["sheet"], batch_dict["rows"], batch_dict["alias"], batch_dict["original_rows"], resp
 
-                    # 2. RUN PARALLEL TRANSLATION
                     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_BATCHES) as executor:
                         future_to_b = {executor.submit(_translate_batch_dict, b, idx): b for idx, b in enumerate(all_batches)}
 
                         for future in as_completed(future_to_b):
                             try:
                                 sheet, b_rows, alias_map, orig_rows, response = future.result()
-                                
+
                                 current_sheet_dict = final_sheet_results[sheet]
                                 for item in (response.translations or []):
                                     current_sheet_dict[item.row_id] = item.translated_text
-                                    
+
                                 for r in b_rows:
                                     if r.row_id not in current_sheet_dict:
                                         current_sheet_dict[r.row_id] = r.source_text
-                                        
+
                                 row_lookup = {r.row_id: r for r in orig_rows}
                                 for dup_id, rep_id in alias_map.items():
                                     current_sheet_dict[dup_id] = current_sheet_dict.get(rep_id, row_lookup[dup_id].source_text)
@@ -1386,7 +519,6 @@ with tab1:
                             metric_progress.metric("Batches done", f"{completed_batches} / {total_batches}")
                             metric_time.metric("Time", f"{elapsed//60:02d}:{elapsed%60:02d}")
 
-                    # 3. WRITE ALL SHEETS BACK WITH PER-SHEET TARGET COLUMNS
                     ExcelHandler.write_translated_workbook(
                         original_file=temp_input_path,
                         sheet_translations=final_sheet_results,
@@ -1396,35 +528,18 @@ with tab1:
 
                     with open(temp_output_path, "rb") as f:
                         st.session_state.final_download_bytes = f.read()
-                    
+
                     st.session_state.translation_complete = True
-                    st.session_state.is_translating = False # Reset the button state here
+                    st.session_state.is_translating = False
                 st.rerun()
 
-            # ── Step 7: Result + Download ───────────────────
             if st.session_state.get("translation_complete") and "final_download_bytes" in st.session_state:
-                render_html(f"""
-                <div class="result-card" style="background: var(--success-soft); border: 1px solid var(--success-soft); border-radius: var(--r-lg); padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 16px 0 10px 0;">
-                    <div class="result-left" style="display: flex; align-items: center; gap: 12px;">
-                        <div class="result-icon" style="width: 38px; height: 38px; border-radius: 50%; background: var(--success-soft); border: 1px solid var(--success-soft); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                            {icon("check-circle", 20, "#22c55e")}
-                        </div>
-                        <div>
-                            <div class="result-title" style="font-size: 0.95rem; font-weight: 700; color: var(--success-text);">Multi-sheet translation complete</div>
-                            <div class="result-sub" style="font-size: 0.85rem; color: var(--text-color); opacity: 0.7; margin-top: 3px;">
-                                {len(st.session_state.get("selected_sheets_trans", []))} sheet(s) successfully processed with unique layouts
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                """)
-
-                render_html(f"""
-                <div class="sec-header">
-                    <div class="sec-header-icon">{icon("file", 14, "#22c55e")}</div>
-                    <div class="sec-title">Output preview (All workbook sheets)</div>
-                </div>
-                """)
+                sheet_count = len(st.session_state.get("selected_sheets_trans", []))
+                render_success_banner(
+                    "Multi-sheet translation complete",
+                    f"{sheet_count} sheet(s) successfully processed with unique layouts",
+                )
+                render_section("file", "Output preview (All workbook sheets)")
 
                 file_bytes = st.session_state.final_download_bytes
 
@@ -1435,7 +550,7 @@ with tab1:
                     else:
                         out_excel = pd.ExcelFile(io.BytesIO(file_bytes))
                         out_sheet_names = out_excel.sheet_names
-                        
+
                         out_tabs = st.tabs(out_sheet_names)
                         for i, s_name in enumerate(out_sheet_names):
                             with out_tabs[i]:
@@ -1456,390 +571,323 @@ with tab1:
                     type="primary",
                     use_container_width=True,
                 )
+
+
 # ============================================================
 # TAB 2 — DATABASE & CONTEXT
 # ============================================================
 
 with tab2:
+        render_db_panel_header(game_id)
 
-    render_html(f"""
-    <div class="db-panel-header">
-        <div class="db-panel-icon" style="background: var(--accent-soft); border: 1px solid var(--accent-soft);">
-            {icon("database", 20, "#6366f1")}
-        </div>
-        <div>
-            <div class="db-panel-title">Database & Context Management</div>
-            <div class="db-panel-desc">
-                Configure game-specific tone, terminology, translation memory
-                and localization context for <strong
-                style="color:var(--text-color); opacity:0.8;">{html.escape(game_id)}</strong>.
-            </div>
-        </div>
-    </div>
-    """)
-
-    # ── Game Profile ──────────────────────────────────────────
-    render_html(f"""
-    <div class="sec-header">
-        <div class="sec-header-icon">{icon("settings", 14, "#6366f1")}</div>
-        <div class="sec-title">Game profile</div>
-    </div>
-    <div class="sec-desc">
-        Define the writing style and localization rules the AI follows
-        when translating text for this game.
-    </div>
-    """)
-
-    existing_profile = fetch_game_profile(db, game_id)
-
-    with st.form("profile_form"):
-        tone_input = st.text_area(
-            "Profile instructions",
-            value=existing_profile,
-            height=150,
-            placeholder=(
-                "e.g. Epic strategy game with a commanding, formal tone. "
-                "Use historical empire-building atmosphere. Keep UI text concise."
-            ),
-        )
-        if st.form_submit_button("Save profile", type="primary"):
-            db.upsert_game_profile(game_id, tone_input)
-            fetch_game_profile.clear()
-            st.success(f"Game profile for `{html.escape(game_id)}` saved.")
-
-    st.divider()
-
-    # ── Manual Term Entry ──────────────────────────────────────
-    render_html(f"""
-    <div class="sec-header">
-        <div class="sec-header-icon">{icon("book", 14, "#6366f1")}</div>
-        <div class="sec-title">Manual glossary entry</div>
-    </div>
-    <div class="sec-desc">
-        Add or edit glossary terms directly. Conflicting entries are flagged
-        for review before saving to <strong
-        style="color:var(--text-color); opacity:0.8;">{html.escape(game_id)}</strong>.
-    </div>
-    """)
-
-    if "manual_terms_df" not in st.session_state:
-        st.session_state.manual_terms_df = pd.DataFrame(
-            {"Chinese Source": [""], "Target Translation": [""]}
+        render_section(
+            "settings",
+            "Game profile",
+            description="Define the writing style and localization rules the AI follows when translating text for this game.",
         )
 
-    edited_df = st.data_editor(
-        st.session_state.manual_terms_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="manual_terms_grid",
-        column_config={
-            "Chinese Source": st.column_config.TextColumn(
-                "Chinese source", required=True
-            ),
-            "Target Translation": st.column_config.TextColumn(
-                f"{target_language} target", required=True
-            ),
-        },
-    )
+        existing_profile = fetch_game_profile(db, game_id)
 
-    if "pending_conflicts" not in st.session_state:
-        st.session_state.pending_conflicts = None
-    if "pending_pairs_to_save" not in st.session_state:
-        st.session_state.pending_pairs_to_save = None
-
-    if st.button("Save terms to database", type="primary"):
-        pairs = []
-        source_terms_list = []
-        for _, row in edited_df.iterrows():
-            src = str(row.get("Chinese Source", "")).strip()
-            tgt = str(row.get("Target Translation", "")).strip()
-            if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
-                pairs.append({"source": src, "target": tgt})
-                source_terms_list.append(src)
-
-        if not pairs:
-            st.error("Fill in at least one row with both source and target.")
-        else:
-            existing_records = db.check_conflicting_terms(
-                game_id, target_language, source_terms_list
+        with st.form("profile_form"):
+            tone_input = st.text_area(
+                "Profile instructions",
+                value=existing_profile,
+                height=150,
+                placeholder=(
+                    "e.g. Epic strategy game with a commanding, formal tone. "
+                    "Use historical empire-building atmosphere. Keep UI text concise."
+                ),
             )
-            existing_map = {
-                item["source_term"]: item["target_term"] for item in existing_records
-            }
+            if st.form_submit_button("Save profile", type="primary"):
+                db.upsert_game_profile(game_id, tone_input)
+                fetch_game_profile.clear()
+                st.success(f"Game profile for `{game_id}` saved.")
 
-            conflicts = []
-            clean_pairs = []
+        st.divider()
 
-            for p in pairs:
-                src = p["source"]
-                tgt = p["target"]
-                if src in existing_map:
-                    conflicts.append({
+        render_section(
+            "book",
+            "Manual glossary entry",
+            description=(
+                "Add or edit glossary terms and optional notes directly. Conflicting entries are flagged "
+                f"for review before saving to <strong style=\"color:var(--text-color); opacity:0.8;\">{html.escape(game_id)}</strong>."
+            ),
+        )
+
+        if "manual_terms_df" not in st.session_state:
+            st.session_state.manual_terms_df = pd.DataFrame(
+                {"Chinese Source": [""], "Target Translation": [""], "Note (Optional)": [""]}
+            )
+
+        edited_df = st.data_editor(
+            st.session_state.manual_terms_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="manual_terms_grid",
+            column_config={
+                "Chinese Source": st.column_config.TextColumn(
+                    "Chinese source", required=True
+                ),
+                "Target Translation": st.column_config.TextColumn(
+                    f"{target_language} target", required=True
+                ),
+                "Note (Optional)": st.column_config.TextColumn(
+                    "Note (Optional)", required=False
+                ),
+            },
+        )
+
+        if "pending_conflicts" not in st.session_state:
+            st.session_state.pending_conflicts = None
+        if "pending_pairs_to_save" not in st.session_state:
+            st.session_state.pending_pairs_to_save = None
+
+        if st.button("Save terms to database", type="primary"):
+            pairs = []
+            source_terms_list = []
+            for _, row in edited_df.iterrows():
+                src = str(row.get("Chinese Source", "")).strip()
+                tgt = str(row.get("Target Translation", "")).strip()
+                note = str(row.get("Note (Optional)", "")).strip()
+
+                if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
+                    pairs.append({
                         "source": src,
-                        "existing_target": existing_map[src],
-                        "new_target": tgt,
+                        "target": tgt,
+                        "note": note if note.lower() != "nan" else ""
                     })
-                else:
-                    clean_pairs.append(p)
+                    source_terms_list.append(src)
 
-            if conflicts:
-                st.session_state.pending_conflicts = conflicts
-                st.session_state.pending_pairs_to_save = clean_pairs
-                st.rerun()
+            if not pairs:
+                st.error("Fill in at least one row with both source and target.")
             else:
-                try:
-                    count = db.upsert_terms(game_id, target_language, clean_pairs)
-                    fetch_terms.clear()
-                    st.success(f"Saved {count:,} term(s) to the database.")
-                    st.session_state.pending_conflicts = None
-                    st.session_state.pending_pairs_to_save = None
-                except Exception as e:
-                    st.error(f"Failed to save terms: {e}")
-
-    # ── Conflict Resolution (Bulk Actions) ─────────────
-    if st.session_state.pending_conflicts:
-
-        n = len(st.session_state.pending_conflicts)
-        render_html(f"""
-        <div class="conflict-badge">
-            {icon("warning", 12, "#f59e0b")}
-            {n} conflict{"s" if n != 1 else ""} detected — review before saving
-        </div>
-        """)
-
-        with st.form("conflict_resolution_form"):
-            st.markdown("### Bulk Actions")
-            bulk_decision = st.radio(
-                "Apply to all conflicts below:", 
-                ["Review individually", "Keep all existing", "Overwrite all with new"], 
-                horizontal=True
-            )
-            st.divider()
-
-            resolution_decisions = {}
-            for idx, conflict in enumerate(st.session_state.pending_conflicts):
-                src = conflict["source"]
-                exist_tgt = conflict["existing_target"]
-                new_tgt = conflict["new_target"]
-
-                st.markdown(f"**Source:** `{src}`")
-
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    render_html(f"""
-                    <div style="background:var(--success-soft);border:1px solid
-                    var(--success-soft);border-radius:8px;padding:8px 12px;
-                    font-size:0.85rem;color:var(--text-color);margin-bottom:6px;">
-                        <div style="font-size:0.75rem;text-transform:uppercase;
-                        letter-spacing:0.08em;opacity:0.7;margin-bottom:4px;">
-                            Existing
-                        </div>
-                        {html.escape(exist_tgt)}
-                    </div>
-                    """)
-                with col_b:
-                    render_html(f"""
-                    <div style="background:var(--accent-soft);border:1px solid
-                    var(--accent-soft);border-radius:8px;padding:8px 12px;
-                    font-size:0.85rem;color:var(--text-color);margin-bottom:6px;">
-                        <div style="font-size:0.75rem;text-transform:uppercase;
-                        letter-spacing:0.08em;opacity:0.7;margin-bottom:4px;">
-                            New
-                        </div>
-                        {html.escape(new_tgt)}
-                    </div>
-                    """)
-
-                # Determine default state based on bulk action
-                default_idx = 0
-                if bulk_decision == "Overwrite all with new":
-                    default_idx = 1
-
-                decision = st.radio(
-                    f"Decision for `{src}`",
-                    options=["Keep existing", "Overwrite with new"],
-                    index=default_idx,
-                    key=f"conflict_{idx}",
-                    horizontal=True,
+                existing_records = db.check_conflicting_terms(
+                    game_id, target_language, source_terms_list
                 )
-                resolution_decisions[src] = decision
+                existing_map = {
+                    item["source_term"]: {"target": item["target_term"], "note": item.get("note", "")}
+                    for item in existing_records
+                }
+
+                conflicts = []
+                clean_pairs = []
+
+                for p in pairs:
+                    src = p["source"]
+                    tgt = p["target"]
+                    note = p["note"]
+                    if src in existing_map:
+                        conflicts.append({
+                            "source": src,
+                            "existing_target": existing_map[src]["target"],
+                            "existing_note": existing_map[src]["note"],
+                            "new_target": tgt,
+                            "new_note": note,
+                        })
+                    else:
+                        clean_pairs.append(p)
+
+                if conflicts:
+                    st.session_state.pending_conflicts = conflicts
+                    st.session_state.pending_pairs_to_save = clean_pairs
+                    st.rerun()
+                else:
+                    try:
+                        count = db.upsert_terms(game_id, target_language, clean_pairs)
+                        fetch_terms.clear()
+                        st.success(f"Saved {count:,} term(s) to the database.")
+                        st.session_state.pending_conflicts = None
+                        st.session_state.pending_pairs_to_save = None
+                    except Exception as e:
+                        st.error(f"Failed to save terms: {e}")
+
+        if st.session_state.pending_conflicts:
+            render_conflict_badge(len(st.session_state.pending_conflicts))
+
+            with st.form("conflict_resolution_form"):
+                st.markdown("### Bulk Actions")
+                bulk_decision = st.radio(
+                    "Apply to all conflicts below:",
+                    ["Review individually", "Keep all existing", "Overwrite all with new"],
+                    horizontal=True
+                )
                 st.divider()
 
-            if st.form_submit_button("Confirm & save", type="primary"):
-                final_pairs_to_save = list(st.session_state.pending_pairs_to_save)
-
-                for conflict in st.session_state.pending_conflicts:
+                resolution_decisions = {}
+                for idx, conflict in enumerate(st.session_state.pending_conflicts):
                     src = conflict["source"]
-                    if "Overwrite" in resolution_decisions[src]:
-                        final_pairs_to_save.append({
-                            "source": src,
-                            "target": conflict["new_target"],
-                        })
+                    exist_tgt = conflict["existing_target"]
+                    exist_note = conflict["existing_note"]
+                    new_tgt = conflict["new_target"]
+                    new_note = conflict["new_note"]
 
-                try:
-                    count = db.upsert_terms(game_id, target_language, final_pairs_to_save)
-                    fetch_terms.clear()
-                    st.success(f"Conflicts resolved. Saved {count:,} term(s).")
-                    st.session_state.pending_conflicts = None
-                    st.session_state.pending_pairs_to_save = None
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to save: {e}")
+                    st.markdown(f"**Source:** `{src}`")
 
-    st.divider()
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        render_term_choice_box("existing", exist_tgt, exist_note)
+                    with col_b:
+                        render_term_choice_box("new", new_tgt, new_note)
 
-    # ── Knowledge Base Upload ──────────────────────────────────
-    render_html(f"""
-    <div class="sec-header">
-        <div class="sec-header-icon">{icon("layers", 14, "#6366f1")}</div>
-        <div class="sec-title">Knowledge base upload</div>
-    </div>
-    <div class="sec-desc">
-        Upload reference translations for
-        <strong style="color:var(--text-color); opacity:0.8;">{html.escape(game_id)}</strong> →
-        <strong style="color:var(--text-color); opacity:0.8;">{html.escape(target_language)}</strong>.
-        Choose the target type before uploading.
-    </div>
-    """)
+                    decision = st.radio(
+                        f"Decision for `{src}`",
+                        options=["Keep existing", "Overwrite with new"],
+                        index=0,
+                        key=f"conflict_{idx}_{hash(src)}",
+                        horizontal=True,
+                    )
+                    resolution_decisions[idx] = decision
+                    st.divider()
 
-    target_type = st.radio(
-        "Knowledge base type",
-        options=["terms", "translation_memory"],
-        format_func=lambda x: (
-            "📌  Glossary terms  ·  Exact match"
-            if x == "terms"
-            else "🧠  Translation memory  ·  Fuzzy match"
-        ),
-        horizontal=True,
-    )
+                if st.form_submit_button("Confirm & save", type="primary"):
+                    final_pairs_to_save = list(st.session_state.pending_pairs_to_save)
 
-    rag_file = st.file_uploader(
-        "Upload reference file",
-        type=["xlsx", "csv"],
-        key="rag_file_uploader",
-    )
+                    for idx, conflict in enumerate(st.session_state.pending_conflicts):
+                        src = conflict["source"]
 
-    df_rag = None
+                        if bulk_decision == "Overwrite all with new" or \
+                           (bulk_decision == "Review individually" and "Overwrite" in resolution_decisions[idx]):
+                            final_pairs_to_save.append({
+                                "source": src,
+                                "target": conflict["new_target"],
+                                "note": conflict["new_note"]
+                            })
 
-    if rag_file is not None:
-        if rag_file.name.lower().endswith(".csv"):
-            df_rag = pd.read_csv(rag_file).fillna("").astype(str)
-        else:
-            try:
-                excel_obj = pd.ExcelFile(rag_file)
-                sheet_names = excel_obj.sheet_names
-                selected_sheet = st.selectbox(
-                    "Select sheet",
-                    options=sheet_names,
-                    key="rag_sheet_select",
-                )
-                df_rag = pd.read_excel(
-                    excel_obj, sheet_name=selected_sheet
-                ).fillna("").astype(str)
-            except Exception as e:
-                st.error(f"Error reading Excel: {e}")
-
-        if df_rag is not None:
-            render_html(f"""
-            <div class="sec-header" style="margin-top:14px;">
-                <div class="sec-header-icon">{icon("file", 14, "#6366f1")}</div>
-                <div class="sec-title">Reference data preview</div>
-            </div>
-            """)
-
-            render_html(f"""
-            <div class="preview-wrap">
-                <div class="preview-bar">
-                    <div class="preview-bar-title">
-                        {icon("file", 14, "currentColor")}
-                        {html.escape(rag_file.name)}
-                    </div>
-                    <div class="preview-bar-count">{len(df_rag):,} rows</div>
-                </div>
-            </div>
-            """)
-
-            st.dataframe(df_rag, use_container_width=True, height=240)
-
-            if len(df_rag.columns) < 2:
-                st.warning(
-                    "File has fewer than 2 columns. "
-                    "Ensure it has both source and target columns."
-                )
-
-            col_source, col_target = st.columns(2)
-            with col_source:
-                selected_source_column = st.selectbox(
-                    "Source column",
-                    options=df_rag.columns,
-                    index=0,
-                )
-            with col_target:
-                selected_target_column = st.selectbox(
-                    f"{target_language} target column",
-                    options=df_rag.columns,
-                    index=min(1, len(df_rag.columns) - 1),
-                )
-
-            if st.button("Upload to database", type="primary"):
-                status_rag = st.status(
-                    f"Uploading to {target_type}…",
-                    expanded=True,
-                )
-
-                try:
-                    pairs = []
-                    for _, row in df_rag.iterrows():
-                        src_val = row.get(selected_source_column)
-                        tgt_val = row.get(selected_target_column)
-                        if pd.notna(src_val) and pd.notna(tgt_val):
-                            src_str = str(src_val).strip()
-                            tgt_str = str(tgt_val).strip()
-                            if (src_str and tgt_str
-                                    and src_str.lower() != "nan"
-                                    and tgt_str.lower() != "nan"):
-                                pairs.append({"source": src_str, "target": tgt_str})
-
-                    if not pairs:
-                        status_rag.update(label="No valid rows found", state="error")
-                        st.error("No valid text pairs found to upload.")
-                    else:
-                        if target_type == "terms":
-                            count = db.upsert_terms(game_id, target_language, pairs)
-                            fetch_terms.clear()
-                            status_rag.update(
-                                label="Upload complete",
-                                state="complete",
-                                expanded=False,
-                            )
-                            st.success(
-                                f"Added {count:,} glossary terms to the database."
-                            )
+                    try:
+                        if final_pairs_to_save:
+                            count = db.upsert_terms(game_id, target_language, final_pairs_to_save)
                         else:
-                            count = db.upsert_tm(game_id, target_language, pairs)
-                            fetch_tm.clear()
-                            status_rag.update(
-                                label="Upload complete",
-                                state="complete",
-                                expanded=False,
-                            )
-                            st.success(
-                                f"Added {count:,} translation memory records."
-                            )
+                            count = 0
 
+                        fetch_terms.clear()
+                        st.success(f"Conflicts resolved. Saved {count:,} term(s).")
+                        st.session_state.pending_conflicts = None
+                        st.session_state.pending_pairs_to_save = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
+
+        st.divider()
+
+        render_section(
+            "layers",
+            "Knowledge base upload",
+            description=(
+                "Upload reference translations for "
+                f"<strong style=\"color:var(--text-color); opacity:0.8;\">{html.escape(game_id)}</strong> → "
+                f"<strong style=\"color:var(--text-color); opacity:0.8;\">{html.escape(target_language)}</strong>. "
+                "Choose the target type before uploading."
+            ),
+        )
+
+        target_type = st.radio(
+            "Knowledge base type",
+            options=["terms", "translation_memory"],
+            format_func=lambda x: (
+                "📌  Glossary terms  ·  Exact match"
+                if x == "terms"
+                else "🧠  Translation memory  ·  Fuzzy match"
+            ),
+            horizontal=True,
+        )
+
+        rag_file = st.file_uploader("Upload reference file", type=["xlsx", "csv"], key="rag_file_uploader")
+
+        df_rag = None
+
+        if rag_file is not None:
+            if rag_file.name.lower().endswith(".csv"):
+                df_rag = pd.read_csv(rag_file).fillna("").astype(str)
+            else:
+                try:
+                    excel_obj = pd.ExcelFile(rag_file)
+                    sheet_names = excel_obj.sheet_names
+                    selected_sheet = st.selectbox("Select sheet", options=sheet_names, key="rag_sheet_select")
+                    df_rag = pd.read_excel(excel_obj, sheet_name=selected_sheet).fillna("").astype(str)
                 except Exception as e:
-                    status_rag.update(label="Upload failed", state="error")
-                    st.error(f"Error uploading data: {e}")
+                    st.error(f"Error reading Excel: {e}")
+
+            if df_rag is not None:
+                render_section("file", "Reference data preview", extra_style="margin-top:14px;")
+                render_preview_bar(rag_file.name, len(df_rag))
+
+                st.dataframe(df_rag, use_container_width=True, height=240)
+
+                if len(df_rag.columns) < 2:
+                    st.warning("File has fewer than 2 columns. Ensure it has both source and target columns.")
+                    st.stop()
+
+                col_source, col_target, col_note = st.columns(3)
+
+                with col_source:
+                    selected_source_column = st.selectbox(
+                        "Source column",
+                        options=df_rag.columns,
+                        index=0
+                    )
+                with col_target:
+                    selected_target_column = st.selectbox(
+                        f"{target_language} target column",
+                        options=df_rag.columns,
+                        index=min(1, len(df_rag.columns) - 1)
+                    )
+                with col_note:
+                    note_options = ["-- None --"] + list(df_rag.columns)
+                    selected_note_column = st.selectbox(
+                        "Note column (Optional)",
+                        options=note_options,
+                        index=0
+                    )
+
+                if st.button("Upload to database", type="primary"):
+                    status_rag = st.status(f"Uploading to {target_type}…", expanded=True)
+
+                    try:
+                        pairs = []
+                        for _, row in df_rag.iterrows():
+                            src_val = row.get(selected_source_column)
+                            tgt_val = row.get(selected_target_column)
+
+                            note_str = ""
+                            if selected_note_column != "-- None --":
+                                note_val = row.get(selected_note_column)
+                                if pd.notna(note_val):
+                                    temp_note = str(note_val).strip()
+                                    if temp_note.lower() != "nan":
+                                        note_str = temp_note
+
+                            if pd.notna(src_val) and pd.notna(tgt_val):
+                                src_str = str(src_val).strip()
+                                tgt_str = str(tgt_val).strip()
+                                if src_str and tgt_str and src_str.lower() != "nan" and tgt_str.lower() != "nan":
+                                    pairs.append({
+                                        "source": src_str,
+                                        "target": tgt_str,
+                                        "note": note_str
+                                    })
+
+                        if not pairs:
+                            status_rag.update(label="No valid rows found", state="error")
+                            st.error("No valid text pairs found to upload.")
+                        else:
+                            if target_type == "terms":
+                                count = db.upsert_terms(game_id, target_language, pairs)
+                                fetch_terms.clear()
+                                status_rag.update(label="Upload complete", state="complete", expanded=False)
+                                st.success(f"Added {count:,} glossary terms to the database.")
+                            else:
+                                count = db.upsert_tm(game_id, target_language, pairs)
+                                fetch_tm.clear()
+                                status_rag.update(label="Upload complete", state="complete", expanded=False)
+                                st.success(f"Added {count:,} translation memory records.")
+
+                    except Exception as e:
+                        status_rag.update(label="Upload failed", state="error")
+                        st.error(f"Error uploading data: {e}")
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-render_html("""
-<div class="main-footer">
-    LocaTool &nbsp;·&nbsp; AI Game Localization Workspace
-    &nbsp;&nbsp;—&nbsp;&nbsp;
-    Designed by&nbsp;<strong>SALAH SULTAN （萨利）</strong>
-</div>
-""")
+render_footer()

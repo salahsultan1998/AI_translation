@@ -30,10 +30,9 @@
       "genre": "Live Social App / Streaming",
       "tone_override": "Tone must be warm, casual, vibrant, and engaging. Infuse a light, friendly social vibe that feels welcoming, lively, and natural for voice rooms, live streams, and community chat. Keep language smooth, modern, and youth-friendly."
     },
-      "S06": {
-      "genre": "SLG ",
-      "tone_override": "Tone must be epic, strategic, commanding, and tactical for this historical hero-conquest and empire-building game. Reflect a world of legendary heroes, alliance warfare, and defense."
-    }
-  }
+      "s06": {
+      "genre": "SLG",
+      "tone_override": "Tone must be epic, strategic, commanding, and tactical for this historical hero-conquest and empire-building game. Reflect a world of legendary heroes, alliance warfare, and defense.\n\n**MANDATORY GLOSSARY CASING RULES:**\n1. **Proper Nouns (`(Rule: 专用名词)`)**: You MUST preserve the exact capitalization provided in the glossary, no matter where the word appears.\n2. **Normal Words (No rule tag)**: You MUST IGNORE the capitalization provided in the glossary. Treat the target word like normal English vocabulary: force it to lowercase when it appears in the middle of a sentence, and only capitalize it if it is the very first word of a sentence."  }
+}
 }
 

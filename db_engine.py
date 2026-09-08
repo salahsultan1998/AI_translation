@@ -61,12 +61,15 @@ class SupabaseDBEngine:
         for p in pairs:
             src = str(p.get("source", "")).strip()
             tgt = str(p.get("target", "")).strip()
+            note = str(p.get("note", "")).strip() # NEW: Added note support
+            
             if src and tgt and src.lower() != "nan" and tgt.lower() != "nan":
                 unique_dict[src] = {
                     "game_id": game_key,
                     "target_language": lang_key,
                     "source_term": src,
-                    "target_term": tgt
+                    "target_term": tgt,
+                    "note": note # NEW: Save note to database
                 }
 
         valid_pairs = list(unique_dict.values())
@@ -91,7 +94,7 @@ class SupabaseDBEngine:
 
         return total_inserted
     
-    def upsert_single_term(self, game_id: str, target_language: str, source: str, target: str):
+    def upsert_single_term(self, game_id: str, target_language: str, source: str, target: str, note: str = ""):
         """Inserts or updates a single term in the glossaries database."""
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
@@ -100,7 +103,8 @@ class SupabaseDBEngine:
             "game_id": game_key,
             "target_language": lang_key,
             "source_term": source.strip(),
-            "target_term": target.strip()
+            "target_term": target.strip(),
+            "note": note.strip() # NEW: Added note support
         }
         response = self.client.table("glossaries").upsert(
             data, 
@@ -120,8 +124,9 @@ class SupabaseDBEngine:
             return []
         
         try:
+            # NEW: Selected the note column as well
             response = self.client.table("glossaries") \
-                .select("source_term, target_term") \
+                .select("source_term, target_term, note") \
                 .eq("game_id", game_key) \
                 .eq("target_language", lang_key) \
                 .in_("source_term", source_terms) \
@@ -136,13 +141,15 @@ class SupabaseDBEngine:
         game_key = self._normalize_game(game_id)
         lang_key = self._normalize_lang(target_language)
 
+        # NEW: Select the note column
         res = self.client.table("glossaries") \
-            .select("source_term,target_term") \
+            .select("source_term,target_term,note") \
             .eq("game_id", game_key) \
             .eq("target_language", lang_key) \
             .execute()
 
-        return {row["source_term"]: row["target_term"] for row in res.data}
+        # NEW: Return a dictionary containing both target and note
+        return {row["source_term"]: {"target": row["target_term"], "note": row.get("note", "")} for row in res.data}
 
     # ========================================================
     # TRANSLATION MEMORY (TM) MANAGEMENT

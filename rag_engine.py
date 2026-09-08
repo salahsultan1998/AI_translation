@@ -1,3 +1,4 @@
+# rag_engine.py
 import ahocorasick
 from rapidfuzz import process, fuzz
 
@@ -16,8 +17,16 @@ class RAGEngine:
         # 1. Build Exact-Match Glossary Tree
         if glossary_dict:
             self.glossary_automaton = ahocorasick.Automaton()
-            for chinese_term, target_term in glossary_dict.items():
-                self.glossary_automaton.add_word(chinese_term, (chinese_term, target_term))
+            for chinese_term, data in glossary_dict.items():
+                # Backwards compatible: supports both new dict format and legacy string format
+                if isinstance(data, dict):
+                    target_term = data.get("target", "")
+                    note = data.get("note", "")
+                else:
+                    target_term = str(data)
+                    note = ""
+                
+                self.glossary_automaton.add_word(chinese_term, (chinese_term, target_term, note))
             self.glossary_automaton.make_automaton()
             self.has_glossary = True
             print(f"📚 Loaded {len(glossary_dict)} exact terms into Aho-Corasick tree.")
@@ -35,14 +44,19 @@ class RAGEngine:
         if self.game_profile:
             print(f"🎭 Loaded Game Profile: {self.game_profile[:50]}...")
 
-    def get_exact_terms(self, source_text: str) -> list[tuple[str, str]]:
+    def get_exact_terms(self, source_text: str) -> list[tuple[str, str, str]]:
         """Scans the text for exact glossary terminology."""
         if not self.has_glossary:
             return []
             
         found_terms = []
-        for end_index, (chinese_term, target_term) in self.glossary_automaton.iter(source_text):
-            found_terms.append((chinese_term, target_term))
+        for end_index, match_data in self.glossary_automaton.iter(source_text):
+            if len(match_data) == 3:
+                chinese_term, target_term, note = match_data
+            else:
+                chinese_term, target_term = match_data
+                note = ""
+            found_terms.append((chinese_term, target_term, note))
         return found_terms
 
     def get_fuzzy_tm(self, source_text: str, top_k: int = 2, threshold: float = 85.0) -> list[tuple[str, str]]:
@@ -50,7 +64,6 @@ class RAGEngine:
         if not self.tm_sources:
             return []
             
-        # WRatio handles variations in string length and word order efficiently
         results = process.extract(
             source_text, 
             self.tm_sources, 
@@ -60,7 +73,6 @@ class RAGEngine:
         )
         
         matches = []
-        # process.extract returns a list of tuples: (matched_string, score, index)
         for match_str, score, _ in results:
             matches.append((match_str, self.tm_dict[match_str]))
             
@@ -79,8 +91,17 @@ class RAGEngine:
         for text in texts:
             # 1. Exact Glossary Matching
             exact_matches = self.get_exact_terms(text)
-            for zh_term, tgt_term in exact_matches:
-                all_terms.add(f"Chinese: '{zh_term}' -> {target_language}: '{tgt_term}'")
+            for item in exact_matches:
+                if len(item) == 3:
+                    zh_term, tgt_term, note = item
+                else:
+                    zh_term, tgt_term = item
+                    note = ""
+
+                if note:
+                    all_terms.add(f"Chinese: '{zh_term}' -> {target_language}: '{tgt_term}' (Rule: {note})")
+                else:
+                    all_terms.add(f"Chinese: '{zh_term}' -> {target_language}: '{tgt_term}'")
                 
             # 2. Fuzzy Translation Memory Matching
             fuzzy_matches = self.get_fuzzy_tm(text, top_k=2, threshold=85.0)
@@ -95,7 +116,7 @@ class RAGEngine:
             formatted_context += f"{self.game_profile}\n\n"
             
         if all_terms:
-            formatted_context += "### REQUIRED GLOSSARY TERMS (Do not change these!):\n"
+            formatted_context += "### GLOSSARY TERMS:\n"
             formatted_context += "\n".join([f"- {t}" for t in all_terms]) + "\n\n"
             
         if all_memory:
