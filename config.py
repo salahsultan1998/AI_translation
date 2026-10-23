@@ -15,7 +15,7 @@ INACTIVITY_LIMIT_SECONDS = 600
 
 MODEL_OPTIONS = [
     "qwen/qwen3.6-flash",
-    "google/gemini-3.7-flash"و
+    "google/gemini-3.7-flash",
     "openai/gpt-6-luna-pro"
 ]
 
